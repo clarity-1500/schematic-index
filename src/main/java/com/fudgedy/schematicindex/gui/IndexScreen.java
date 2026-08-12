@@ -5,7 +5,9 @@ import com.fudgedy.schematicindex.Settings;
 import com.fudgedy.schematicindex.catalogue.Catalogue;
 import com.fudgedy.schematicindex.catalogue.Category;
 import com.fudgedy.schematicindex.catalogue.Download;
+import com.fudgedy.schematicindex.catalogue.Follows;
 import com.fudgedy.schematicindex.catalogue.MockCatalogue;
+import com.fudgedy.schematicindex.catalogue.NewsFeed;
 import com.fudgedy.schematicindex.catalogue.SchematicEntry;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
@@ -66,6 +68,7 @@ public class IndexScreen extends Screen {
 	private enum Page {
 		BROWSE("Browse"),
 		SAVED("Saved"),
+		NEWS("News"),
 		UPLOAD("Upload"),
 		SETTINGS("Settings");
 
@@ -79,6 +82,7 @@ public class IndexScreen extends Screen {
 			return switch (this) {
 				case BROWSE -> new ItemStack(Items.SPYGLASS);
 				case SAVED -> new ItemStack(Items.ENDER_CHEST);
+				case NEWS -> new ItemStack(Items.WRITTEN_BOOK);
 				case UPLOAD -> new ItemStack(Items.WRITABLE_BOOK);
 				case SETTINGS -> new ItemStack(Items.ANVIL);
 			};
@@ -156,6 +160,7 @@ public class IndexScreen extends Screen {
 	private final Rect detailDownload = new Rect();
 	private final Rect detailPreview3d = new Rect();
 	private final Rect detailSave = new Rect();
+	private final Rect detailFollow = new Rect();
 	private final Rect detailClose = new Rect();
 	private final Rect detailHeart = new Rect();
 	/** 1 = every layer shown; lower values hide the top of the build so interiors can be read. */
@@ -287,7 +292,8 @@ public class IndexScreen extends Screen {
 		this.chipRects.clear();
 		this.chipOrder.clear();
 
-		if (this.page == Page.UPLOAD) {
+		// Only the two grid pages carry the category chip row.
+		if (this.page != Page.BROWSE && this.page != Page.SAVED) {
 			this.chipRowHeight = 26;
 			return;
 		}
@@ -399,6 +405,8 @@ public class IndexScreen extends Screen {
 			this.renderUpload(ctx, hoverX, hoverY, partialTick);
 		} else if (this.page == Page.SETTINGS) {
 			this.renderSettings(ctx, hoverX, hoverY);
+		} else if (this.page == Page.NEWS) {
+			this.renderNews(ctx);
 		} else {
 			this.renderGrid(ctx, hoverX, hoverY);
 			this.renderScrollbar(ctx);
@@ -412,6 +420,9 @@ public class IndexScreen extends Screen {
 		if (modalOpen) {
 			this.renderDetail(ctx, mouseX, mouseY);
 		}
+
+		// Toasts sit above everything, including the modal.
+		Toasts.render(ctx);
 	}
 
 	// ------------------------------------------------------------------ chrome
@@ -1034,6 +1045,91 @@ public class IndexScreen extends Screen {
 		return y + 8;
 	}
 
+	// ------------------------------------------------------------------ news page
+
+	private void renderNews(GuiGraphics ctx) {
+		int top = TOP_BAR_HEIGHT + 10;
+		int bottom = this.height - OUTER_MARGIN;
+		int x = this.contentX;
+		int width = this.contentWidth;
+
+		ctx.enableScissor(x, top, x + width, bottom);
+		int y = top - Math.round(this.scroll);
+		int total = 0;
+
+		for (NewsFeed.Entry entry : NewsFeed.entries()) {
+			int cardHeight = this.renderNewsCard(ctx, entry, x, y, width, top, bottom);
+			y += cardHeight + 8;
+			total += cardHeight + 8;
+		}
+
+		ctx.disableScissor();
+
+		this.maxScroll = Math.max(0.0F, total - (bottom - top));
+		this.scroll = Math.min(this.scroll, this.maxScroll);
+
+		if (this.maxScroll > 0.0F) {
+			int trackHeight = bottom - top;
+			int barHeight = Math.max(16, Math.round(trackHeight * (trackHeight / (trackHeight + this.maxScroll))));
+			int barY = top + Math.round((trackHeight - barHeight) * (this.scroll / this.maxScroll));
+			int barX = Math.min(x + width + 2, this.width - 4);
+			Theme.roundedRect(ctx, barX, barY, 3, barHeight, 1, Theme.HAIRLINE);
+		}
+	}
+
+	/** Draws one news card and returns its height, whether or not it was on screen. */
+	private int renderNewsCard(GuiGraphics ctx, NewsFeed.Entry entry, int x, int y, int width,
+			int clipTop, int clipBottom) {
+		int pad = 10;
+
+		List<String> body = new ArrayList<>();
+
+		for (String paragraph : entry.lines()) {
+			body.addAll(this.wrap(paragraph, width - pad * 2, 8));
+			body.add("");
+		}
+
+		if (!body.isEmpty() && body.get(body.size() - 1).isEmpty()) {
+			body.remove(body.size() - 1);
+		}
+
+		int headerHeight = 14;
+		int cardHeight = pad + headerHeight + 4 + this.font.lineHeight + 4
+				+ body.size() * (this.font.lineHeight + 2) + pad;
+
+		// Off-screen cards still count toward the scroll height, they just skip drawing.
+		if (y + cardHeight < clipTop || y > clipBottom) {
+			return cardHeight;
+		}
+
+		Theme.roundedRect(ctx, x, y, width, cardHeight, Theme.RADIUS_CARD, Theme.SURFACE_CARD);
+
+		String badge = entry.badge();
+		int badgeWidth = this.font.width(Theme.bold(badge)) + 12;
+		Theme.roundedRect(ctx, x + pad, y + pad, badgeWidth, 12, Theme.RADIUS_PILL,
+				entry.highlight() ? Theme.ACCENT : Theme.SURFACE_ELEVATED);
+		Theme.text(ctx, this.font, Theme.bold(badge), x + pad + 6, y + pad + 2,
+				entry.highlight() ? Theme.ON_ACCENT : Theme.TEXT_MUTE);
+
+		String when = entry.when();
+		Theme.text(ctx, this.font, when, x + width - pad - this.font.width(when), y + pad + 2, Theme.TEXT_ASH);
+
+		int textY = y + pad + headerHeight + 4;
+		Theme.text(ctx, this.font, Theme.bold(Theme.clipBold(this.font, entry.title(), width - pad * 2)),
+				x + pad, textY, Theme.TEXT);
+		textY += this.font.lineHeight + 4;
+
+		for (String line : body) {
+			if (!line.isEmpty()) {
+				Theme.text(ctx, this.font, line, x + pad, textY, Theme.TEXT_MUTE);
+			}
+
+			textY += this.font.lineHeight + 2;
+		}
+
+		return cardHeight;
+	}
+
 	// ------------------------------------------------------------------ detail modal
 
 	private void renderDetail(GuiGraphics ctx, int mouseX, int mouseY) {
@@ -1128,7 +1224,15 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, Theme.clip(this.font, "Posted by " + entry.poster(), infoWidth), infoX, line, Theme.TEXT_MUTE);
 		line += this.font.lineHeight + 1;
 		Theme.text(ctx, this.font, Theme.clip(this.font, "Designed by " + entry.designer(), infoWidth), infoX, line, Theme.TEXT_MUTE);
-		line += this.font.lineHeight + 6;
+		line += this.font.lineHeight + 4;
+
+		// Follow the poster: fills accent while following. Toggling it queues a toast either way.
+		boolean following = Follows.isFollowing(entry.poster());
+		String followLabel = following ? "Following" : "Follow";
+		int followWidth = Math.min(infoWidth, this.font.width(Theme.bold(followLabel)) + 20);
+		this.detailFollow.set(infoX, line, followWidth, 13);
+		this.pillButton(ctx, this.detailFollow, followLabel, mouseX, mouseY, following);
+		line += 13 + 6;
 
 		line = this.metaRow(ctx, "Dimensions", entry.dimensionsLabel(), infoX, line, infoWidth);
 		line = this.metaRow(ctx, "Blocks", entry.blockCountLabel(), infoX, line, infoWidth);
@@ -1285,6 +1389,12 @@ public class IndexScreen extends Screen {
 
 		if (this.page == Page.SETTINGS) {
 			return this.clickSettings(mouseX, mouseY);
+		}
+
+		// The News tab is read-only; its cards are not clickable, so swallow clicks here rather than
+		// letting them fall through to the grid's entry hit-testing.
+		if (this.page == Page.NEWS) {
+			return true;
 		}
 
 		if (this.retryButton.contains(mouseX, mouseY)) {
@@ -1670,6 +1780,14 @@ public class IndexScreen extends Screen {
 			this.resetCamera();
 		} else if (this.detailSave.contains(mouseX, mouseY)) {
 			toggleSaved(entry);
+		} else if (this.detailFollow.contains(mouseX, mouseY)) {
+			boolean nowFollowing = Follows.toggle(entry.poster());
+			Theme.click(nowFollowing ? 1.3F : 0.9F);
+
+			if (nowFollowing) {
+				Toasts.push("Following " + entry.poster(), "You'll get a toast when they post.",
+						new ItemStack(Items.PLAYER_HEAD));
+			}
 		} else if (this.detailDownload.contains(mouseX, mouseY)) {
 			this.startDownload(entry);
 		} else if (this.detailPreview3d.contains(mouseX, mouseY)) {
@@ -1784,7 +1902,8 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
-		if (this.page == Page.UPLOAD) {
+		// Upload and Settings are fixed-height forms; only the grid and news pages scroll.
+		if (this.page == Page.UPLOAD || this.page == Page.SETTINGS) {
 			return true;
 		}
 

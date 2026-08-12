@@ -72,6 +72,9 @@ public final class MockCatalogue {
 	 */
 	public static SchematicEntry post(SchematicEntry entry) {
 		ENTRIES.add(0, entry);
+		// A real backend would push this; in the beta the notification path starts here so a post by
+		// a followed creator raises a toast just as it eventually will.
+		Follows.notifyForPost(entry);
 		return entry;
 	}
 
