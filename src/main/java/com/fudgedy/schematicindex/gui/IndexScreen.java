@@ -1,6 +1,7 @@
 package com.fudgedy.schematicindex.gui;
 
 import com.fudgedy.schematicindex.SchematicIndexMod;
+import com.fudgedy.schematicindex.catalogue.Catalogue;
 import com.fudgedy.schematicindex.catalogue.Category;
 import com.fudgedy.schematicindex.catalogue.MockCatalogue;
 import com.fudgedy.schematicindex.catalogue.SchematicEntry;
@@ -23,9 +24,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -49,6 +52,9 @@ public class IndexScreen extends Screen {
 	/** Client-side only until there is a backend to post likes to. */
 	private static final Set<String> LIKED = new HashSet<>();
 
+	/** When each post was last liked, so the heart can play its pop. */
+	private static final Map<String, Long> LIKE_POPS = new HashMap<>();
+
 	private enum Page {
 		BROWSE("Browse"),
 		SAVED("Saved"),
@@ -62,8 +68,8 @@ public class IndexScreen extends Screen {
 
 		ItemStack icon() {
 			return switch (this) {
-				case BROWSE -> new ItemStack(Items.MAP);
-				case SAVED -> new ItemStack(Items.CHEST);
+				case BROWSE -> new ItemStack(Items.SPYGLASS);
+				case SAVED -> new ItemStack(Items.ENDER_CHEST);
 				case UPLOAD -> new ItemStack(Items.WRITABLE_BOOK);
 			};
 		}
@@ -97,6 +103,7 @@ public class IndexScreen extends Screen {
 
 	private final Rect closeButton = new Rect();
 	private final Rect sortButton = new Rect();
+	private final Rect retryButton = new Rect();
 	private final List<Rect> chipRects = new ArrayList<>();
 	private final List<Category> chipOrder = new ArrayList<>();
 	private final List<Rect> railRects = new ArrayList<>();
@@ -108,6 +115,8 @@ public class IndexScreen extends Screen {
 	private final Rect formImagePrev = new Rect();
 	private final Rect formImageNext = new Rect();
 	private final Rect uploadPicturesButton = new Rect();
+	private final Rect uploadSchematicButton = new Rect();
+	private @Nullable Path formSchematic;
 	private final List<Path> formPictures = new ArrayList<>();
 	private int formPictureStart = -1;
 	private int formPicturePreview;
@@ -116,10 +125,19 @@ public class IndexScreen extends Screen {
 	private String formStatus = "";
 
 	private @Nullable SchematicEntry detail;
+	private long detailOpenedAt;
 	private int detailImage;
 	private boolean detailModel;
-	private int detailRotation;
-	private double rotateDrag;
+	private float detailYaw = 35.0F;
+	private float detailPitch = 28.0F;
+	private float detailZoom = 1.0F;
+	private boolean orbiting;
+	private boolean cutaway = true;
+	private boolean freeLook;
+	private double @Nullable [] freeEye;
+	private final Rect cutawayToggle = new Rect();
+	private final Rect freeLookToggle = new Rect();
+	private final Rect resetViewButton = new Rect();
 	private final Rect detailImageRect = new Rect();
 	private final Rect detailPrev = new Rect();
 	private final Rect detailNext = new Rect();
@@ -138,6 +156,7 @@ public class IndexScreen extends Screen {
 	protected void init() {
 		ImageStore.discover();
 		SchematicPreview.discover();
+		Catalogue.ensureLoaded();
 
 		int available = this.width - RAIL_WIDTH - OUTER_MARGIN * 2;
 		this.contentWidth = Math.min(available, CONTENT_MAX_WIDTH);
@@ -285,7 +304,9 @@ public class IndexScreen extends Screen {
 		}
 
 		Comparator<SchematicEntry> comparator = switch (this.sort) {
-			case NEWEST -> Comparator.comparingInt(entry -> entry.uploaded().length());
+			// Genuinely newest first. This used to sort on the length of a "3d ago" string, which put
+			// anything posted "just now" last.
+			case NEWEST -> Comparator.comparingLong(SchematicEntry::postedAt).reversed();
 			case DOWNLOADS -> Comparator.comparingInt(SchematicEntry::downloads).reversed();
 			case LIKES -> Comparator.comparingInt(IndexScreen::likesOf).reversed();
 		};
@@ -356,9 +377,10 @@ public class IndexScreen extends Screen {
 		String lead = "The Schematic ";
 		String tail = "Index";
 
-		if (titleRoom >= this.font.width(lead + tail) * 2) {
-			Theme.textScaled(ctx, this.font, lead, titleX, 7, 2.0F, Theme.TEXT);
-			Theme.textScaled(ctx, this.font, tail, titleX + this.font.width(lead) * 2, 7, 2.0F, Theme.ACCENT_BRIGHT);
+		if (titleRoom >= this.font.width(Theme.bold(lead + tail)) * 2) {
+			Theme.textScaled(ctx, this.font, Theme.bold(lead), titleX, 7, 2.0F, Theme.TEXT);
+			Theme.textScaled(ctx, this.font, Theme.bold(tail),
+					titleX + this.font.width(Theme.bold(lead)) * 2, 7, 2.0F, Theme.ACCENT_BRIGHT);
 		} else if (titleRoom >= this.font.width(lead + tail)) {
 			Theme.text(ctx, this.font, Theme.bold(lead), titleX, 12, Theme.TEXT);
 			Theme.text(ctx, this.font, Theme.bold(tail), titleX + this.font.width(Theme.bold(lead)), 12, Theme.ACCENT_BRIGHT);
@@ -397,7 +419,12 @@ public class IndexScreen extends Screen {
 				ctx.fill(0, rect.y, 2, rect.y + rect.height, Theme.ACCENT);
 			}
 
-			ctx.renderItem(pages[i].icon(), rect.x + (RAIL_WIDTH - 17) / 2, rect.y + (RAIL_ITEM_HEIGHT - 16) / 2);
+			int iconX = rect.x + (RAIL_WIDTH - 17) / 2;
+			int iconY = rect.y + (RAIL_ITEM_HEIGHT - 16) / 2;
+			// A lighter tile behind each icon so they read as buttons rather than floating items.
+			Theme.roundedRect(ctx, iconX - 2, iconY - 2, 20, 20, Theme.RADIUS_PILL,
+					active ? Theme.RAIL_TILE_ACTIVE : Theme.RAIL_TILE);
+			ctx.renderItem(pages[i].icon(), iconX, iconY);
 
 			// Label appears beside the rail on hover, so the icons stay uncluttered.
 			if (hovered && !active) {
@@ -425,6 +452,27 @@ public class IndexScreen extends Screen {
 				rect.x + (rect.width - this.font.width(text)) / 2,
 				rect.y + (rect.height - this.font.lineHeight) / 2 + 1,
 				primary ? Theme.ON_ACCENT : Theme.TEXT);
+	}
+
+	/** A labelled on/off row: filled accent square when on, hollow when off. */
+	private void toggle(GuiGraphics ctx, Rect rect, String label, boolean on, int mouseX, int mouseY) {
+		boolean hovered = rect.contains(mouseX, mouseY);
+		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL,
+				hovered ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
+
+		int boxSize = 8;
+		int boxX = rect.x + 5;
+		int boxY = rect.y + (rect.height - boxSize) / 2;
+
+		if (on) {
+			Theme.roundedRect(ctx, boxX, boxY, boxSize, boxSize, 1, Theme.ACCENT);
+		} else {
+			Theme.roundedOutline(ctx, boxX, boxY, boxSize, boxSize, 1, Theme.TEXT_ASH);
+		}
+
+		Theme.text(ctx, this.font, Theme.clip(this.font, label, rect.width - boxSize - 14),
+				boxX + boxSize + 5, rect.y + (rect.height - this.font.lineHeight) / 2 + 1,
+				on ? Theme.TEXT : Theme.TEXT_MUTE);
 	}
 
 	private void arrowButton(GuiGraphics ctx, Rect rect, boolean left, int mouseX, int mouseY) {
@@ -457,6 +505,15 @@ public class IndexScreen extends Screen {
 	// ------------------------------------------------------------------ grid
 
 	private void renderGrid(GuiGraphics ctx, int mouseX, int mouseY) {
+		Catalogue.State state = Catalogue.state();
+
+		if (state != Catalogue.State.READY) {
+			this.renderSkeleton(ctx, state == Catalogue.State.OFFLINE, mouseX, mouseY);
+			return;
+		}
+
+		this.retryButton.set(0, 0, 0, 0);
+
 		if (this.visible.isEmpty()) {
 			String message = this.page == Page.SAVED
 					? "Nothing saved yet - like or download a post"
@@ -491,6 +548,66 @@ public class IndexScreen extends Screen {
 		ctx.disableScissor();
 	}
 
+	/**
+	 * Placeholder cards for when the index has not arrived: a shimmer while connecting, and a frozen
+	 * version behind a message when the connection failed. Better than an empty screen, and it shows
+	 * the shape of what is coming.
+	 */
+	private void renderSkeleton(GuiGraphics ctx, boolean offline, int mouseX, int mouseY) {
+		ctx.enableScissor(this.contentX, this.gridTop, this.contentX + this.contentWidth, this.gridBottom);
+
+		int rowHeight = this.cardHeight + GUTTER;
+		int rows = (this.gridBottom - this.gridTop) / rowHeight + 1;
+		int imageHeight = imageHeight(this.cardWidth);
+		long now = System.currentTimeMillis();
+
+		for (int row = 0; row < rows; row++) {
+			for (int column = 0; column < this.columns; column++) {
+				int x = this.contentX + column * (this.cardWidth + GUTTER);
+				int y = this.gridTop + row * rowHeight;
+
+				Theme.roundedRect(ctx, x, y, this.cardWidth, this.cardHeight, Theme.RADIUS_CARD, Theme.SURFACE_CARD);
+				Theme.roundedRect(ctx, x, y, this.cardWidth, imageHeight, Theme.RADIUS_CARD, Theme.SKELETON);
+				Theme.roundedRect(ctx, x + 5, y + imageHeight + 6, this.cardWidth * 2 / 3, 5, 1, Theme.SKELETON);
+				Theme.roundedRect(ctx, x + 5, y + imageHeight + 15, this.cardWidth / 3, 5, 1, Theme.SKELETON);
+
+				if (!offline) {
+					// A band sweeps across the placeholders so it reads as loading, not as broken.
+					int span = this.cardWidth + 40;
+					int offset = (int) ((now / 4L + (long) (row + column) * 40L) % span) - 20;
+					int shimmerX = x + offset;
+					ctx.enableScissor(Math.max(this.contentX, x), y,
+							Math.min(this.contentX + this.contentWidth, x + this.cardWidth), y + imageHeight);
+					Theme.roundedRect(ctx, shimmerX, y, 18, imageHeight, 0, Theme.SKELETON_SHINE);
+					ctx.disableScissor();
+				}
+			}
+		}
+
+		ctx.disableScissor();
+
+		if (!offline) {
+			this.retryButton.set(0, 0, 0, 0);
+			return;
+		}
+
+		// Offline: dim the placeholders and say what happened.
+		ctx.fill(this.contentX, this.gridTop, this.contentX + this.contentWidth, this.gridBottom, 0xCC0F1114);
+
+		String headline = "Can't reach the index";
+		String detail = "Check your connection and try again.";
+		int centreX = this.contentX + this.contentWidth / 2;
+		int centreY = this.gridTop + (this.gridBottom - this.gridTop) / 2;
+
+		Theme.textScaled(ctx, this.font, Theme.bold(headline),
+				centreX - this.font.width(Theme.bold(headline)), centreY - 24, 2.0F, Theme.TEXT);
+		Theme.text(ctx, this.font, detail, centreX - this.font.width(detail) / 2, centreY - 2, Theme.TEXT_MUTE);
+
+		int retryWidth = this.font.width(Theme.bold("Try again")) + 20;
+		this.retryButton.set(centreX - retryWidth / 2, centreY + 12, retryWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.retryButton, "Try again", mouseX, mouseY, true);
+	}
+
 	private void renderCard(GuiGraphics ctx, SchematicEntry entry, int x, int y, int mouseX, int mouseY) {
 		boolean hovered = Theme.inside(mouseX, mouseY, x, y, this.cardWidth, this.cardHeight)
 				&& mouseY >= this.gridTop && mouseY < this.gridBottom;
@@ -513,7 +630,7 @@ public class IndexScreen extends Screen {
 
 		Rect heart = this.heartRect(x, y, imageHeight);
 		Theme.roundedRect(ctx, heart.x - 2, heart.y - 2, HEART_SIZE + 4, HEART_SIZE + 4, Theme.RADIUS_PILL, 0xCC0F1114);
-		Theme.heart(ctx, heart.x, heart.y, LIKED.contains(entry.id()));
+		Theme.heartPopped(ctx, heart.x, heart.y, LIKED.contains(entry.id()), popAge(entry));
 
 		if (entry.downloaded()) {
 			int badge = this.font.width("Saved") + 8;
@@ -621,6 +738,22 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.formCategoryButton, "Category: " + this.formCategory.label(), mouseX, mouseY, false);
 		y += FIELD_HEIGHT + 8;
 
+		// The schematic itself - the one genuinely required file.
+		Theme.text(ctx, this.font, "Schematic file", formX, y, Theme.TEXT_ASH);
+		y += this.font.lineHeight + 2;
+
+		this.uploadSchematicButton.set(formX, y, formWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.uploadSchematicButton,
+				this.formSchematic == null ? "Choose .litematic" : "Change file", mouseX, mouseY, false);
+		y += FIELD_HEIGHT + 3;
+
+		String chosen = this.formSchematic == null
+				? "No file chosen"
+				: this.formSchematic.getFileName().toString();
+		Theme.text(ctx, this.font, Theme.clip(this.font, chosen, formWidth), formX, y,
+				this.formSchematic == null ? Theme.TEXT_ASH : Theme.ACCENT_BRIGHT);
+		y += this.font.lineHeight + 8;
+
 		// Image picker. Stands in for the web upload form's file picker plus crop step.
 		Theme.text(ctx, this.font, "Pictures", formX, y, Theme.TEXT_ASH);
 		y += this.font.lineHeight + 2;
@@ -698,21 +831,28 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
-		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+		// The scrim fades in rather than snapping, which takes the hard edge off opening a post.
+		long open = System.currentTimeMillis() - this.detailOpenedAt;
+		float fade = Math.min(1.0F, Math.max(0.0F, open / 140.0F));
+		ctx.fill(0, 0, this.width, this.height, ((int) (0x99 * fade) << 24));
 
-		int modalWidth = Math.min(this.contentWidth, 440);
-		int modalHeight = Math.min(this.height - 24, 232);
+		// The model view earns its space: the panel grows by a quarter and the render takes most of
+		// the extra, since the metadata column needs no more room than it already has.
+		int modalWidth = Math.min(this.contentWidth, this.detailModel ? 550 : 440);
+		int modalHeight = Math.min(this.height - 24, this.detailModel ? 290 : 232);
 		int x = (this.width - modalWidth) / 2;
 		int y = (this.height - modalHeight) / 2;
 		int pad = 10;
 
 		Theme.roundedRect(ctx, x, y, modalWidth, modalHeight, Theme.RADIUS_MODAL, Theme.SURFACE_ELEVATED);
 
-		int imageWidth = Math.round((modalWidth - pad * 3) * 0.56F);
+		int imageWidth = Math.round((modalWidth - pad * 3) * (this.detailModel ? 0.64F : 0.56F));
 		int imageHeight = imageHeight(imageWidth);
 
 		if (this.detailModel) {
-			Identifier model = SchematicPreview.texture(entry.imageStart(), this.detailRotation);
+			SchematicPreview.request(entry.schematicSlot(), this.detailYaw, this.detailPitch, this.detailZoom,
+					this.cutaway, this.freeLook, this.freeEye);
+			Identifier model = SchematicPreview.texture(entry.schematicSlot());
 
 			if (model != null) {
 				ctx.fill(x + pad, y + pad, x + pad + imageWidth, y + pad + imageHeight, 0xFF10151A);
@@ -750,7 +890,7 @@ public class IndexScreen extends Screen {
 		}
 
 		String caption = this.detailModel
-				? Theme.clip(this.font, SchematicPreview.name(entry.imageStart()), imageWidth - 16)
+				? Theme.clip(this.font, SchematicPreview.name(entry.schematicSlot()), imageWidth - 16)
 				: (entry.imageCount() > 1 ? (this.detailImage + 1) + "/" + entry.imageCount() : "");
 
 		if (!caption.isEmpty()) {
@@ -765,16 +905,29 @@ public class IndexScreen extends Screen {
 		int infoWidth = modalWidth - (infoX - x) - pad;
 		int line = y + pad;
 
-		Theme.text(ctx, this.font, Theme.bold(Theme.clip(this.font, entry.title(), infoWidth)), infoX, line, Theme.TEXT);
+		// Age sits in the corner, right of the title.
+		String age = entry.agoLabel();
+		int ageWidth = this.font.width(age);
+		Theme.text(ctx, this.font, age, x + modalWidth - pad - ageWidth, y + pad, Theme.TEXT_ASH);
+
+		Theme.text(ctx, this.font, Theme.bold(Theme.clip(this.font, entry.title(), infoWidth - ageWidth - 6)),
+				infoX, line, Theme.TEXT);
 		line += this.font.lineHeight + 4;
 		Theme.text(ctx, this.font, Theme.clip(this.font, "Posted by " + entry.poster(), infoWidth), infoX, line, Theme.TEXT_MUTE);
 		line += this.font.lineHeight + 1;
 		Theme.text(ctx, this.font, Theme.clip(this.font, "Designed by " + entry.designer(), infoWidth), infoX, line, Theme.TEXT_MUTE);
 		line += this.font.lineHeight + 6;
 
-		line = this.metaRow(ctx, "Size", entry.dimensionsLabel(), infoX, line, infoWidth);
+		line = this.metaRow(ctx, "Dimensions", entry.dimensionsLabel(), infoX, line, infoWidth);
 		line = this.metaRow(ctx, "Blocks", entry.blockCountLabel(), infoX, line, infoWidth);
-		line = this.metaRow(ctx, "Downloads", entry.downloadsLabel(), infoX, line, infoWidth);
+
+		Theme.text(ctx, this.font, "Downloads", infoX, line, Theme.TEXT_ASH);
+		String downloads = entry.downloadsLabel();
+		int downloadsWidth = this.font.width(downloads);
+		Theme.text(ctx, this.font, downloads, infoX + infoWidth - downloadsWidth, line, Theme.TEXT);
+		Theme.downloadGlyph(ctx, infoX + infoWidth - downloadsWidth - Theme.DOWNLOAD_GLYPH_WIDTH - 3,
+				line + 2, Theme.TEXT_MUTE);
+		line += this.font.lineHeight + 2;
 
 		boolean liked = LIKED.contains(entry.id());
 		String likeCount = SchematicEntry.compact(likesOf(entry));
@@ -782,7 +935,29 @@ public class IndexScreen extends Screen {
 		int likeWidth = this.font.width(likeCount);
 		Theme.text(ctx, this.font, likeCount, infoX + infoWidth - likeWidth, line, liked ? Theme.ACCENT_BRIGHT : Theme.TEXT);
 		this.detailHeart.set(infoX + infoWidth - likeWidth - HEART_SIZE - 4, line - 1, HEART_SIZE, HEART_SIZE);
-		Theme.heart(ctx, this.detailHeart.x, this.detailHeart.y, liked);
+		Theme.heartPopped(ctx, this.detailHeart.x, this.detailHeart.y, liked, popAge(entry));
+		line += this.font.lineHeight + 2;
+
+		if (this.detailModel) {
+			line += 6;
+			Theme.text(ctx, this.font, "View", infoX, line, Theme.TEXT_ASH);
+			line += this.font.lineHeight + 3;
+
+			this.cutawayToggle.set(infoX, line, infoWidth, FIELD_HEIGHT);
+			this.toggle(ctx, this.cutawayToggle, "Zoom through walls", this.cutaway, mouseX, mouseY);
+			line += FIELD_HEIGHT + 4;
+
+			this.freeLookToggle.set(infoX, line, infoWidth, FIELD_HEIGHT);
+			this.toggle(ctx, this.freeLookToggle, "Look around", this.freeLook, mouseX, mouseY);
+			line += FIELD_HEIGHT + 4;
+
+			this.resetViewButton.set(infoX, line, infoWidth, FIELD_HEIGHT);
+			this.pillButton(ctx, this.resetViewButton, "Reset view", mouseX, mouseY, false);
+		} else {
+			this.cutawayToggle.set(0, 0, 0, 0);
+			this.freeLookToggle.set(0, 0, 0, 0);
+			this.resetViewButton.set(0, 0, 0, 0);
+		}
 
 		int descriptionY = y + pad + imageHeight + 6;
 
@@ -851,6 +1026,10 @@ public class IndexScreen extends Screen {
 		double mouseY = event.y();
 
 		if (this.detail != null) {
+			if (this.detailModel && this.detailImageRect.contains(mouseX, mouseY)) {
+				this.orbiting = true;
+			}
+
 			this.clickDetail(mouseX, mouseY);
 			return true;
 		}
@@ -871,8 +1050,15 @@ public class IndexScreen extends Screen {
 			return this.clickUpload(event, doubleClick, mouseX, mouseY);
 		}
 
+		if (this.retryButton.contains(mouseX, mouseY)) {
+			Theme.click();
+			Catalogue.refresh();
+			return true;
+		}
+
 		if (this.sortButton.contains(mouseX, mouseY)) {
 			this.sort = this.sort.next();
+			Theme.click();
 			this.layoutChips();
 			this.refilter();
 			return true;
@@ -881,6 +1067,7 @@ public class IndexScreen extends Screen {
 		for (int i = 0; i < this.chipRects.size(); i++) {
 			if (this.chipRects.get(i).contains(mouseX, mouseY)) {
 				this.category = this.chipOrder.get(i);
+				Theme.click();
 				this.scroll = 0.0F;
 				this.refilter();
 				return true;
@@ -898,9 +1085,13 @@ public class IndexScreen extends Screen {
 				}
 			} else {
 				this.detail = hit;
+				Theme.click(1.2F);
+				this.detailOpenedAt = System.currentTimeMillis();
 				this.detailImage = 0;
 				this.detailModel = false;
-				this.detailRotation = 0;
+				this.detailYaw = 35.0F;
+				this.detailPitch = 28.0F;
+				this.detailZoom = 1.0F;
 				this.status = "";
 			}
 
@@ -911,6 +1102,10 @@ public class IndexScreen extends Screen {
 	}
 
 	private void switchPage(Page target) {
+		if (target != this.page) {
+			Theme.click(1.1F);
+		}
+
 		this.page = target;
 		this.scroll = 0.0F;
 		this.formStatus = "";
@@ -969,6 +1164,11 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
+		if (this.uploadSchematicButton.contains(mouseX, mouseY)) {
+			this.openSchematicPicker();
+			return true;
+		}
+
 		if (this.postButton.contains(mouseX, mouseY)) {
 			this.submitPost();
 			return true;
@@ -998,6 +1198,11 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
+		if (this.formSchematic == null) {
+			this.formStatus = "Choose the .litematic file first.";
+			return;
+		}
+
 		if (this.formPictures.isEmpty()) {
 			this.formStatus = "Select at least one picture.";
 			return;
@@ -1017,10 +1222,11 @@ public class IndexScreen extends Screen {
 				size * size * 2,
 				0,
 				0,
-				"just now",
+				System.currentTimeMillis(),
 				description.isEmpty() ? "No description provided." : description,
 				this.formPictures.size(),
 				this.formPictureStart,
+				SchematicPreview.register(this.formSchematic),
 				false
 		);
 
@@ -1028,6 +1234,7 @@ public class IndexScreen extends Screen {
 		this.formPictures.clear();
 		this.formPictureStart = -1;
 		this.formPicturePreview = 0;
+		this.formSchematic = null;
 		this.titleBox.setValue("");
 		this.designerBox.setValue("");
 		this.descriptionBox.setValue("");
@@ -1070,6 +1277,33 @@ public class IndexScreen extends Screen {
 		}, "schematicindex-picture-picker").start();
 	}
 
+	private void openSchematicPicker() {
+		new Thread(() -> {
+			String result;
+
+			try (MemoryStack stack = MemoryStack.stackPush()) {
+				PointerBuffer filters = stack.mallocPointer(1);
+				filters.put(stack.UTF8("*.litematic"));
+				filters.flip();
+				result = TinyFileDialogs.tinyfd_openFileDialog(
+						"Choose the schematic", "", filters, "Litematica schematic", false);
+			} catch (Throwable e) {
+				SchematicIndexMod.LOGGER.warn("File picker failed", e);
+				return;
+			}
+
+			if (result == null || result.isBlank()) {
+				return;
+			}
+
+			Path chosen = Path.of(result.trim());
+			Minecraft.getInstance().execute(() -> {
+				this.formSchematic = chosen;
+				this.formStatus = chosen.getFileName() + " selected.";
+			});
+		}, "schematicindex-schematic-picker").start();
+	}
+
 	private void applyPictures(List<Path> chosen) {
 		boolean truncated = chosen.size() > 5;
 		List<Path> capped = truncated ? List.copyOf(chosen.subList(0, 5)) : chosen;
@@ -1091,35 +1325,65 @@ public class IndexScreen extends Screen {
 		}
 
 		if (this.detailClose.contains(mouseX, mouseY)) {
+			Theme.click(0.9F);
 			this.detail = null;
 			this.status = "";
 		} else if (this.detailHeart.contains(mouseX, mouseY)) {
 			toggleLike(entry);
 		} else if (this.detailPrev.contains(mouseX, mouseY)) {
-			if (this.detailModel) {
-				this.detailRotation = Math.floorMod(this.detailRotation - 1, 4);
-			} else {
-				this.detailImage = Math.floorMod(this.detailImage - 1, entry.imageCount());
-			}
+			Theme.click();
+			this.detailImage = Math.floorMod(this.detailImage - 1, entry.imageCount());
 		} else if (this.detailNext.contains(mouseX, mouseY)) {
-			if (this.detailModel) {
-				this.detailRotation = Math.floorMod(this.detailRotation + 1, 4);
-			} else {
-				this.detailImage = Math.floorMod(this.detailImage + 1, entry.imageCount());
-			}
+			Theme.click();
+			this.detailImage = Math.floorMod(this.detailImage + 1, entry.imageCount());
+		} else if (this.cutawayToggle.contains(mouseX, mouseY)) {
+			this.cutaway = !this.cutaway;
+			Theme.click(this.cutaway ? 1.3F : 0.9F);
+		} else if (this.freeLookToggle.contains(mouseX, mouseY)) {
+			this.freeLook = !this.freeLook;
+			Theme.click(this.freeLook ? 1.3F : 0.9F);
+			// Freeze the eye where the orbit camera was, so toggling does not teleport the view.
+			this.freeEye = this.freeLook
+					? SchematicPreview.eye(entry.schematicSlot(), this.detailYaw, this.detailPitch,
+							this.detailZoom, this.cutaway)
+					: null;
+			this.status = this.freeLook ? "Drag to look around. Zoom is locked." : "";
+		} else if (this.resetViewButton.contains(mouseX, mouseY)) {
+			Theme.click();
+			this.resetCamera();
 		} else if (this.detailDownload.contains(mouseX, mouseY)) {
+			Theme.click(1.2F);
 			this.status = "No catalogue server configured yet.";
 		} else if (this.detailPreview3d.contains(mouseX, mouseY)) {
+			Theme.click(1.2F);
 			this.detailModel = !this.detailModel;
-			this.rotateDrag = 0.0D;
-			this.status = this.detailModel ? "Drag the preview to rotate." : "";
+			this.status = this.detailModel ? "Drag to orbit, scroll to zoom." : "";
 		}
 	}
 
+	private void resetCamera() {
+		this.detailYaw = 35.0F;
+		this.detailPitch = 28.0F;
+		this.detailZoom = 1.0F;
+		this.freeLook = false;
+		this.freeEye = null;
+		this.status = "";
+	}
+
 	private static void toggleLike(SchematicEntry entry) {
-		if (!LIKED.remove(entry.id())) {
-			LIKED.add(entry.id());
+		if (LIKED.remove(entry.id())) {
+			Theme.click(0.9F);
+			return;
 		}
+
+		LIKED.add(entry.id());
+		LIKE_POPS.put(entry.id(), System.currentTimeMillis());
+		Theme.click(1.4F);
+	}
+
+	private static long popAge(SchematicEntry entry) {
+		Long popped = LIKE_POPS.get(entry.id());
+		return popped == null ? -1L : System.currentTimeMillis() - popped;
 	}
 
 	private boolean heartAt(SchematicEntry entry, double mouseX, double mouseY) {
@@ -1164,19 +1428,13 @@ public class IndexScreen extends Screen {
 
 	@Override
 	public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
-		if (this.detail != null && this.detailModel && this.detailImageRect.contains(event.x(), event.y())) {
-			this.rotateDrag += dragX;
-
-			while (this.rotateDrag >= 45.0D) {
-				this.detailRotation = Math.floorMod(this.detailRotation + 1, 4);
-				this.rotateDrag -= 45.0D;
-			}
-
-			while (this.rotateDrag <= -45.0D) {
-				this.detailRotation = Math.floorMod(this.detailRotation - 1, 4);
-				this.rotateDrag += 45.0D;
-			}
-
+		// Orbiting continues while the button is held, even once the cursor leaves the preview -
+		// otherwise a fast drag stops dead at the panel edge.
+		if (this.orbiting && this.detail != null && this.detailModel) {
+			// Free orbit: the model follows the mouse. Pitch stops short of the poles, where the
+			// camera basis degenerates.
+			this.detailYaw = (this.detailYaw + (float) dragX * 0.8F) % 360.0F;
+			this.detailPitch = Math.max(-88.0F, Math.min(88.0F, this.detailPitch + (float) dragY * 0.8F));
 			return true;
 		}
 
@@ -1184,8 +1442,24 @@ public class IndexScreen extends Screen {
 	}
 
 	@Override
+	public boolean mouseReleased(MouseButtonEvent event) {
+		this.orbiting = false;
+		return super.mouseReleased(event);
+	}
+
+	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-		if (this.detail != null || this.page == Page.UPLOAD) {
+		if (this.detail != null) {
+			// Look-around mode is a fixed viewpoint: turning is allowed, moving is not.
+			if (this.detailModel && !this.freeLook && this.detailImageRect.contains(mouseX, mouseY)) {
+				float factor = scrollY > 0 ? 1.18F : 1.0F / 1.18F;
+				this.detailZoom = SchematicPreview.clampZoom(this.detail.schematicSlot(), this.detailZoom * factor);
+			}
+
+			return true;
+		}
+
+		if (this.page == Page.UPLOAD) {
 			return true;
 		}
 

@@ -1,9 +1,12 @@
 package com.fudgedy.schematicindex.gui;
 
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.resources.Identifier;
+import net.minecraft.sounds.SoundEvents;
 
 /**
  * Palette and drawing primitives.
@@ -32,6 +35,12 @@ public final class Theme {
 	public static final int TEXT_ASH = 0xFF6E767C;
 
 	public static final int SCRIM = 0x99000000;
+
+	public static final int RAIL_TILE = 0xFF2A3037;
+	public static final int RAIL_TILE_ACTIVE = 0xFF343B44;
+
+	public static final int SKELETON = 0xFF262C33;
+	public static final int SKELETON_SHINE = 0x14FFFFFF;
 
 	/** Radius scale: pills/chips, cards, modal. No fourth value. */
 	public static final int RADIUS_PILL = 2;
@@ -152,11 +161,11 @@ public final class Theme {
 	}
 
 	/**
-	 * Shown when a post has no picture. A blueprint grid rather than a flat box, so an image-less
-	 * card still looks deliberate instead of broken.
+	 * Shown when a post has no picture, or while one is loading. A blueprint grid over a wash of the
+	 * brand green, so an image-less card still looks deliberate instead of broken.
 	 */
 	public static void blueprintPlaceholder(GuiGraphics ctx, int x, int y, int width, int height) {
-		ctx.fill(x, y, x + width, y + height, 0xFF141A1E);
+		ctx.fillGradient(x, y, x + width, y + height, 0xFF1B3A2F, BACKDROP);
 
 		for (int gx = 6; gx < width; gx += 6) {
 			ctx.fill(x + gx, y, x + gx + 1, y + height, gx % 24 == 0 ? 0x1A3FA87F : 0x0EFFFFFF);
@@ -213,6 +222,49 @@ public final class Theme {
 	}
 
 	public static final int DOWNLOAD_GLYPH_WIDTH = 5;
+
+	/** A short UI click. Pitch lets a toggle sound different from a plain press. */
+	public static void click(float pitch) {
+		Minecraft client = Minecraft.getInstance();
+
+		if (client != null && client.getSoundManager() != null) {
+			client.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, pitch));
+		}
+	}
+
+	public static void click() {
+		click(1.0F);
+	}
+
+	/**
+	 * Draws the heart at a scale that briefly overshoots 1 after a like, so the tap has some weight.
+	 * {@code age} is milliseconds since the click.
+	 */
+	public static void heartPopped(GuiGraphics ctx, int x, int y, boolean liked, long age) {
+		float scale = 1.0F;
+
+		if (age >= 0 && age < HEART_POP_MILLIS) {
+			float progress = age / (float) HEART_POP_MILLIS;
+			// Up fast, settle back: a half sine reads as a pop rather than a wobble.
+			scale = 1.0F + 0.55F * (float) Math.sin(progress * Math.PI);
+		}
+
+		if (scale == 1.0F) {
+			heart(ctx, x, y, liked);
+			return;
+		}
+
+		float centreX = x + 4.5F;
+		float centreY = y + 4.5F;
+		ctx.pose().pushMatrix();
+		ctx.pose().translate(centreX, centreY);
+		ctx.pose().scale(scale, scale);
+		ctx.pose().translate(-centreX, -centreY);
+		heart(ctx, x, y, liked);
+		ctx.pose().popMatrix();
+	}
+
+	public static final long HEART_POP_MILLIS = 260L;
 
 	public static void heart(GuiGraphics ctx, int x, int y, boolean liked) {
 		ctx.blitSprite(RenderPipelines.GUI_TEXTURED, Identifier.withDefaultNamespace("hud/heart/container"), x, y, 9, 9);

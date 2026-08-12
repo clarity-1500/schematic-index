@@ -8,6 +8,8 @@ package com.fudgedy.schematicindex.catalogue;
  * @param designer   who actually built the design - often not the same person
  * @param imageCount how many gallery images the poster attached (first one is the thumbnail)
  * @param imageStart index of the first gallery image in the image source
+ * @param schematicSlot which schematic the 3D preview renders - separate from the images, so an
+ *                      uploaded post previews its own file rather than a stand-in
  */
 public record SchematicEntry(
 		String id,
@@ -21,10 +23,11 @@ public record SchematicEntry(
 		int blockCount,
 		int downloads,
 		int likes,
-		String uploaded,
+		long postedAt,
 		String description,
 		int imageCount,
 		int imageStart,
+		int schematicSlot,
 		boolean downloaded
 ) {
 	public String dimensionsLabel() {
@@ -57,5 +60,33 @@ public record SchematicEntry(
 
 	public String likesLabel() {
 		return compact(this.likes);
+	}
+
+	/** "just now", "10m ago", "3h ago", "5d ago" - how the post's age reads in the corner of a card. */
+	public String agoLabel() {
+		long minutes = Math.max(0L, System.currentTimeMillis() - this.postedAt) / 60_000L;
+
+		if (minutes < 1L) {
+			return "just now";
+		}
+
+		if (minutes < 60L) {
+			return minutes + "m ago";
+		}
+
+		long hours = minutes / 60L;
+
+		if (hours < 24L) {
+			return hours + "h ago";
+		}
+
+		long days = hours / 24L;
+
+		if (days < 30L) {
+			return days + "d ago";
+		}
+
+		long months = days / 30L;
+		return months < 12L ? months + "mo ago" : (months / 12L) + "y ago";
 	}
 }

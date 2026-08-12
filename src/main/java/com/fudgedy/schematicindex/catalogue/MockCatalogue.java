@@ -107,11 +107,12 @@ public final class MockCatalogue {
 						blocks,
 						120 + (roll % 40000),
 						4 + (roll % 900),
-						(1 + (roll % 27)) + "d ago",
+						System.currentTimeMillis() - (1L + (roll % 27)) * 86_400_000L,
 						"Placeholder description. The real one comes from the catalogue index and can run to "
 								+ "a few lines, so the detail panel needs to wrap and clamp it properly.",
 						1 + (roll % 4),
 						Math.abs(roll / 13),
+						Math.abs(roll / 7),
 						(roll % 5) == 0
 				));
 			}
