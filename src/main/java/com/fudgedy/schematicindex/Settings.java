@@ -24,7 +24,7 @@ public final class Settings {
 	private static final String KEY_DEVICE_TOKEN = "device_token";
 	private static final String KEY_TERMS = "terms_accepted";
 
-	private static final String OFFICIAL_API = "";
+	private static final String OFFICIAL_API = "https://schematic-index-production.up.railway.app";
 
 	private static boolean sounds = true;
 	private static boolean confirmOverwrite = true;
