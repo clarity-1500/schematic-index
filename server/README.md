@@ -1,48 +1,62 @@
-# The Schematic Index — Server
+# The Schematic Index - Server
 
-Backend API + admin site for The Schematic Index mod. Node + Express + SQLite.
+Backend API and admin panel for The Schematic Index mod. Node, Express, and SQLite (via the built-in
+`node:sqlite`, so there are no native modules to compile).
 
 ## Run locally
 
 ```bash
 cd server
-cp .env.example .env      # then edit .env and set OWNER_KEY
+cp .env.example .env      # then set OWNER_KEY
 npm install
 npm start                 # http://localhost:8080
 ```
 
-Check it's up:
+Check it is up:
 
 ```bash
 curl http://localhost:8080/health
-# {"ok":true,"service":"schematic-index","version":"0.1.0","posts":0}
+```
+
+Seed the news feed and a couple of sample posts for development:
+
+```bash
+npm run seed
 ```
 
 ## Layout
 
 ```
-src/config.js   env config + file-URL helper
-src/db.js       SQLite connection + schema (the whole data model)
-src/app.js      Express app (endpoints added section by section)
-src/index.js    entry point
-data/           created at runtime: index.db + files/ (git-ignored)
+src/config.js        environment config and the file-URL helper
+src/db.js            SQLite connection and schema
+src/serialize.js     row -> API JSON
+src/read.js          GET /index, /post/:id, /news, and /files static hosting
+src/interactions.js  POST /like, /unlike, /download, /report
+src/upload.js        POST /upload (code auth, .litematic parsing), GET /uploader
+src/admin.js         owner-authenticated admin API and the /admin page
+src/discord.js       forwards reports to a Discord webhook
+src/ratelimit.js     per-token rate limiting
+src/app.js           wires the routes together
+src/index.js         entry point
+public/admin.html    the admin single-page app
 ```
 
-## Data & files
+## Data and files
 
-- **SQLite** database at `DATA_DIR/index.db`. On a PaaS, set `DATA_DIR` to a persistent volume.
-- **Uploaded files** on disk under `DATA_DIR/files/` (`img/` and `sch/`), served at `/files/...`.
-- Nothing here is committed — `data/` and `.env` are git-ignored.
+- SQLite database at `DATA_DIR/index.db`. On a host, point `DATA_DIR` at a persistent volume.
+- Uploaded files under `DATA_DIR/files/` (`img/` and `sch/`), served at `/files/...`.
+- `data/` and `.env` are git-ignored.
 
-## Roadmap
+## Endpoints
 
-- [x] Section 1 — skeleton + data model + `/health`
-- [x] Section 2 — read API (`/index`, `/post/:id`, `/news`) + file serving
-- [x] Section 3 — interactions (`/like`, `/unlike`, `/download`, `/report`) + rate limiting
-- [x] Section 4 — upload API + code validation
-- [x] Section 5 — admin API + owner auth
-- [x] Section 6 — admin website (`/admin`)
-- [x] Section 7 — reports → Discord
-- [x] Section 8 — deployment config (Railway) — see DEPLOY.md
-- [x] Section 9 — mod wired to the server (Backend/Catalogue/NewsFeed/uploads/interactions)
-- [ ] Section 10 — deploy + launch (post-deploy: Railway + Modrinth)
+Read: `GET /index` (paginated, with category/search/sort), `GET /post/:id`, `GET /news`,
+`GET /files/...`, `GET /health`.
+
+Interactions (require an `X-Device-Token` header): `POST /like`, `/unlike`, `/download`, `/report`.
+
+Uploads (require an `X-Upload-Code` header): `POST /upload`, and `GET /uploader` to validate a code.
+
+Admin (require an `X-Owner-Key` header): manage posts, news, reports, and upload codes under
+`/admin/api/...`, with the panel served at `/admin`.
+
+See [DEPLOY.md](DEPLOY.md) for hosting.

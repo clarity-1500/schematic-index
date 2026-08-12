@@ -38,17 +38,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-/**
- * The catalogue browser. Layout only - entries come from {@link MockCatalogue} and images from
- * {@link ImageStore}, so the whole screen works with no backend.
- */
 public class IndexScreen extends Screen {
 	private static final int OUTER_MARGIN = 8;
 	private static final int CONTENT_MAX_WIDTH = 720;
 	private static final int TOP_BAR_HEIGHT = 32;
 	private static final int RAIL_WIDTH = 34;
 	private static final int RAIL_ITEM_HEIGHT = 34;
-	/** How far a rail icon grows on hover - larger than a pill's, so the lift is easy to feel. */
+	
 	private static final float RAIL_HOVER_GROW = 0.14F;
 	private static final int RAIL_ITEM_GAP = 8;
 	private static final int GUTTER = 6;
@@ -58,15 +54,13 @@ public class IndexScreen extends Screen {
 	private static final int SCROLL_STEP = 24;
 	private static final int HEART_SIZE = 9;
 	private static final int FIELD_HEIGHT = 16;
-	/** How many cards a page of the grid reveals; more load as the scroll nears the bottom. */
+	
 	private static final int PAGE_SIZE = 12;
-	/** Room left below the last row for the "loading more" indicator while a page is pending. */
+	
 	private static final int LOADING_ROW = 20;
 
-	/** When each post was last liked, so the heart can play its pop. Purely visual, so not persisted. */
 	private static final Map<String, Long> LIKE_POPS = new HashMap<>();
 
-	/** Last-seen download state per post, so the finish/fail sound plays once on the transition. */
 	private final Map<String, Download.State> downloadStates = new HashMap<>();
 
 	private enum Page {
@@ -112,7 +106,7 @@ public class IndexScreen extends Screen {
 
 	private float scroll;
 	private float maxScroll;
-	/** How many of {@link #visible} are currently revealed - grows a page at a time (infinite scroll). */
+	
 	private int shownCount = PAGE_SIZE;
 
 	private EditBox searchBox;
@@ -129,7 +123,6 @@ public class IndexScreen extends Screen {
 	private final List<Category> chipOrder = new ArrayList<>();
 	private final List<Rect> railRects = new ArrayList<>();
 
-	// Upload form state
 	private final Rect unlockButton = new Rect();
 	private final Rect signOutButton = new Rect();
 	private final Rect formCategoryButton = new Rect();
@@ -170,34 +163,33 @@ public class IndexScreen extends Screen {
 	private final Rect detailClose = new Rect();
 	private final Rect detailCornerClose = new Rect();
 	private final Rect detailHeart = new Rect();
-	/** Set when a download would replace an existing file and the overwrite prompt is on. */
+	
 	private @Nullable SchematicEntry pendingOverwrite;
 	private final Rect overwriteReplace = new Rect();
 	private final Rect overwriteCancel = new Rect();
-	/** The report affordance and, when open, the reason picker over the detail modal. */
+	
 	private static final String[] REPORT_REASONS = {
 			"NSFW / Explicit Content", "Stealing Credit", "Spam / Misleading", "Other"};
-	/** Server reason codes, aligned to {@link #REPORT_REASONS} by index. */
+	
 	private static final String[] REPORT_CODES = {"NSFW", "STOLEN", "SPAM", "OTHER"};
 	private final Rect detailReport = new Rect();
 	private boolean reportOpen;
 	private final Rect[] reportReasonRects = new Rect[REPORT_REASONS.length];
 	private final Rect reportCancel = new Rect();
-	/** Second report step: a context box to explain the report. */
+	
 	private boolean reportContextOpen;
 	private int reportReasonIndex = -1;
 	private String reportContext = "";
 	private final Rect reportSubmit = new Rect();
 	private static final int REPORT_CONTEXT_MAX = 99;
-	/** 1 = every layer shown; lower values hide the top of the build so interiors can be read. */
+	
 	private float detailLayer = 1.0F;
 	private boolean draggingLayer;
-	/** While following, the Follow button first asks to confirm before it actually unfollows. */
+	
 	private boolean followConfirm;
 	private long followConfirmAt;
 	private String status = "";
 
-	// Settings page controls
 	private final Rect soundsToggle = new Rect();
 	private final Rect overwriteToggle = new Rect();
 	private final Rect changeFolderButton = new Rect();
@@ -209,7 +201,6 @@ public class IndexScreen extends Screen {
 	private final Rect notificationsToggle = new Rect();
 	private final Rect termsButton = new Rect();
 
-	// First-run tutorial: a short spotlight tour of the layout.
 	private static final String[][] TUTORIAL = {
 			{"Welcome to The Schematic Index",
 					"Browse the latest community schematics via posts and download them directly into your "
@@ -230,7 +221,6 @@ public class IndexScreen extends Screen {
 	private final Rect tutorialBack = new Rect();
 	private final Rect tutorialSkip = new Rect();
 
-	// Terms of service, shown before anything else on first open and gating the online features.
 	private static final String TERMS_BODY =
 			"By using The Schematic Index, you agree to these terms. If you do not agree, you cannot use "
 					+ "the online service.\n\n"
@@ -246,7 +236,7 @@ public class IndexScreen extends Screen {
 	private boolean tosOpen;
 	private float tosScroll;
 	private float tosMaxScroll;
-	/** Set once the reader reaches the bottom; the Agree/Decline buttons stay disabled until then. */
+	
 	private boolean tosScrolledBottom;
 	private final Rect tosAgree = new Rect();
 	private final Rect tosDecline = new Rect();
@@ -266,7 +256,6 @@ public class IndexScreen extends Screen {
 		this.contentWidth = Math.min(available, CONTENT_MAX_WIDTH);
 		this.contentX = RAIL_WIDTH + OUTER_MARGIN + (available - this.contentWidth) / 2;
 
-		// Grid density shifts the width-based column count: more columns = smaller thumbnails.
 		this.columns = Math.max(2, Math.min(7, columnsFor(this.contentWidth) + Settings.gridDensity()));
 		this.cardWidth = (this.contentWidth - GUTTER * (this.columns - 1)) / this.columns;
 		this.cardHeight = imageHeight(this.cardWidth) + CAPTION_HEIGHT;
@@ -285,8 +274,6 @@ public class IndexScreen extends Screen {
 
 		this.railRects.clear();
 
-		// Space the tabs out evenly and centre the group vertically, so they read as a deliberate set
-		// rather than a stack crammed under the top bar.
 		int railCount = Page.values().length;
 		int railBlock = RAIL_ITEM_HEIGHT + RAIL_ITEM_GAP;
 		int groupHeight = railCount * RAIL_ITEM_HEIGHT + (railCount - 1) * RAIL_ITEM_GAP;
@@ -301,16 +288,12 @@ public class IndexScreen extends Screen {
 
 		this.buildUploadFields();
 
-		// Cap the two names to what their destination can show, so neither can break a border. The
-		// thumbnail is capped to a card's text width, the full name to the detail panel's title room.
 		int avgBoldChar = Math.max(4, this.font.width(Theme.bold("abcdefghijklmnopqrstuvwxyz")) / 26 + 1);
 		this.thumbnailBox.setMaxLength(Math.max(10, (this.cardWidth - 12) / avgBoldChar));
 		this.titleBox.setMaxLength(Math.max(24, 190 / avgBoldChar));
 
 		this.layoutChips();
 
-		// The terms come first: until they are accepted, nothing else is reachable. The tour follows
-		// once they agree. Both are guarded so a window resize does not reopen them.
 		if (!Settings.termsAccepted()) {
 			this.openTerms();
 		} else {
@@ -387,7 +370,6 @@ public class IndexScreen extends Screen {
 		this.chipRects.clear();
 		this.chipOrder.clear();
 
-		// Only the two grid pages carry the category chip row.
 		if (this.page != Page.BROWSE && this.page != Page.SAVED) {
 			this.chipRowHeight = 26;
 			return;
@@ -445,25 +427,20 @@ public class IndexScreen extends Screen {
 		}
 
 		Comparator<SchematicEntry> comparator = switch (this.sort) {
-			// Genuinely newest first. This used to sort on the length of a "3d ago" string, which put
-			// anything posted "just now" last.
 			case NEWEST -> Comparator.comparingLong(SchematicEntry::postedAt).reversed();
 			case DOWNLOADS -> Comparator.comparingInt(SchematicEntry::downloads).reversed();
 			case LIKES -> Comparator.comparingInt(IndexScreen::likesOf).reversed();
 		};
 		this.visible.sort(comparator);
 
-		// A filter/sort change starts the list back at the first page.
 		this.shownCount = PAGE_SIZE;
 		this.recomputeScrollBounds();
 	}
 
-	/** How many cards are actually on screen right now - the revealed window, capped by what matches. */
 	private int shownCap() {
 		return Math.min(this.shownCount, this.visible.size());
 	}
 
-	/** Recomputes {@link #maxScroll} from the revealed window, leaving room for the loading indicator. */
 	private void recomputeScrollBounds() {
 		int shown = this.shownCap();
 		int rows = (shown + this.columns - 1) / this.columns;
@@ -477,7 +454,6 @@ public class IndexScreen extends Screen {
 		this.scroll = Math.min(this.scroll, this.maxScroll);
 	}
 
-	/** Reveals the next page once the scroll nears the bottom, until the whole list is shown. */
 	private void maybeLoadMore() {
 		if (this.shownCount >= this.visible.size()) {
 			return;
@@ -501,7 +477,6 @@ public class IndexScreen extends Screen {
 		return entry.likes() + (isLikedBy(entry) ? 1 : 0);
 	}
 
-	/** Whether this device likes a post: the server's flag when present, else the local record. */
 	private static boolean isLikedBy(SchematicEntry entry) {
 		return entry.liked() || Bookmarks.isLiked(entry.id());
 	}
@@ -510,7 +485,6 @@ public class IndexScreen extends Screen {
 		return entry.imageStart() + offset;
 	}
 
-	/** One gallery image of a post - a catalogue URL when the post has them, else the local test image. */
 	private @Nullable Identifier imageTexture(SchematicEntry entry, int index) {
 		List<String> urls = entry.imageUrls();
 
@@ -521,7 +495,6 @@ public class IndexScreen extends Screen {
 		return ImageStore.texture(imageSlot(entry, index));
 	}
 
-	/** The card image: the post's thumbnail URL when it has one, else its first gallery image. */
 	private @Nullable Identifier thumbnailTexture(SchematicEntry entry) {
 		if (entry.thumbnailUrl() != null && !entry.thumbnailUrl().isBlank()) {
 			return ImageStore.texture(entry.thumbnailUrl());
@@ -560,7 +533,6 @@ public class IndexScreen extends Screen {
 		this.renderRail(ctx, hoverX, hoverY);
 		this.renderTopBar(ctx, hoverX, hoverY);
 
-		// The search bar belongs to the grid pages only.
 		this.searchBox.setVisible(this.gridPage());
 
 		if (this.gridPage()) {
@@ -581,21 +553,17 @@ public class IndexScreen extends Screen {
 			}
 		}
 
-		// Toasts sit above everything, including the modal.
 		Toasts.render(ctx);
 
-		// The first-run tour sits above even the toasts - it owns the screen until dismissed.
 		if (this.tutorialActive) {
 			this.renderTutorial(ctx, mouseX, mouseY);
 		}
 
-		// The terms gate sits above everything, including the tour.
 		if (this.tosOpen) {
 			this.renderTos(ctx, mouseX, mouseY);
 		}
 	}
 
-	/** Opens the terms fresh: the reader starts at the top and must scroll down before answering. */
 	private void openTerms() {
 		this.tosOpen = true;
 		this.tosScroll = 0.0F;
@@ -616,7 +584,6 @@ public class IndexScreen extends Screen {
 		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.ACCENT);
 		Theme.text(ctx, this.font, Theme.bold("Terms of Service"), x + pad, y + pad, Theme.TEXT);
 
-		// The scrolling body sits between the title and the button row.
 		int bodyTop = y + pad + line + 6;
 		int bodyBottom = y + cardHeight - pad - 16 - 8;
 		int bodyWidth = cardWidth - pad * 2;
@@ -627,7 +594,6 @@ public class IndexScreen extends Screen {
 		this.tosMaxScroll = Math.max(0.0F, contentHeight - viewport);
 		this.tosScroll = Math.max(0.0F, Math.min(this.tosMaxScroll, this.tosScroll));
 
-		// Once the reader has reached the end, unlock the buttons (and stay unlocked).
 		if (this.tosScroll >= this.tosMaxScroll - 0.5F) {
 			this.tosScrolledBottom = true;
 		}
@@ -642,7 +608,6 @@ public class IndexScreen extends Screen {
 
 		ctx.disableScissor();
 
-		// Scroll track + thumb on the right, when there is more than fits.
 		if (this.tosMaxScroll > 0.0F) {
 			int trackX = x + cardWidth - pad + 2;
 			Theme.roundedRect(ctx, trackX, bodyTop, 2, viewport, 1, Theme.SURFACE_CARD);
@@ -661,7 +626,6 @@ public class IndexScreen extends Screen {
 			this.pillButton(ctx, this.tosDecline, "Decline", mouseX, mouseY, false);
 			this.pillButton(ctx, this.tosAgree, "I Agree", mouseX, mouseY, true);
 		} else {
-			// Disabled until they read to the bottom, with a hint in the middle.
 			this.disabledPill(ctx, this.tosDecline, "Decline");
 			this.disabledPill(ctx, this.tosAgree, "I Agree");
 			String hint = "Scroll down to continue";
@@ -669,7 +633,6 @@ public class IndexScreen extends Screen {
 		}
 	}
 
-	/** A greyed-out, non-interactive pill for an action that is not available yet. */
 	private void disabledPill(GuiGraphics ctx, Rect rect, String label) {
 		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL, Theme.SURFACE_CARD);
 		String text = Theme.bold(label);
@@ -678,7 +641,6 @@ public class IndexScreen extends Screen {
 	}
 
 	private void clickTos(double mouseX, double mouseY) {
-		// The buttons do nothing until the terms have been read to the bottom.
 		if (!this.tosScrolledBottom) {
 			return;
 		}
@@ -689,35 +651,30 @@ public class IndexScreen extends Screen {
 			Theme.click(1.2F);
 			this.maybeStartTutorial();
 		} else if (this.tosDecline.contains(mouseX, mouseY)) {
-			// Declining withdraws consent and leaves - the service can't be used without it.
 			Settings.revokeTerms();
 			this.onClose();
 		}
 	}
 
-	// ------------------------------------------------------------------ first-run tour
-
-	/** The element the current step points at, or null for the centered welcome step. */
 	private int @Nullable [] tutorialTarget() {
 		return switch (this.tutorialStep) {
 			case 1 -> {
-				// The left rail, from the first icon to the last.
 				int top = this.railRects.isEmpty() ? TOP_BAR_HEIGHT : this.railRects.get(0).y - 3;
 				int bottom = this.railRects.isEmpty() ? this.height
 						: this.railRects.get(this.railRects.size() - 1).y
 								+ this.railRects.get(this.railRects.size() - 1).height + 3;
 				yield new int[]{0, top, RAIL_WIDTH, bottom - top};
 			}
-			// The category chip row.
+
 			case 2 -> new int[]{RAIL_WIDTH, TOP_BAR_HEIGHT, this.width - RAIL_WIDTH, this.chipRowHeight};
-			// The search bar in the top bar.
+
 			case 3 -> {
 				int searchWidth = this.searchWidth();
 				int searchX = this.contentX + (this.contentWidth - searchWidth) / 2;
 				int searchY = (TOP_BAR_HEIGHT - 16) / 2;
 				yield new int[]{searchX - 2, searchY - 2, searchWidth + 4, 20};
 			}
-			// The first grid card.
+
 			case 4 -> new int[]{this.contentX, this.gridTop, this.cardWidth, this.cardHeight};
 			default -> null;
 		};
@@ -726,8 +683,6 @@ public class IndexScreen extends Screen {
 	private void renderTutorial(GuiGraphics ctx, int mouseX, int mouseY) {
 		int[] target = this.tutorialTarget();
 
-		// Spotlight: dim everything except the target with four bands, so the highlighted element stays
-		// fully lit. The welcome step has no target, so the whole screen dims.
 		if (target == null) {
 			ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
 		} else {
@@ -742,7 +697,6 @@ public class IndexScreen extends Screen {
 			Theme.roundedOutline(ctx, tx - 1, ty - 1, tw + 2, th + 2, Theme.RADIUS_CARD, Theme.ACCENT_BRIGHT);
 		}
 
-		// The explaining card, kept in the lower-centre so it never covers the element it describes.
 		String[] step = TUTORIAL[this.tutorialStep];
 		int cardWidth = 260;
 		int pad = 12;
@@ -763,7 +717,6 @@ public class IndexScreen extends Screen {
 			ty += this.font.lineHeight + 1;
 		}
 
-		// Buttons: Skip subtle on the left, Back (when past step one) and the prominent Next/Done right.
 		int buttonY = y + cardHeight - pad - 16;
 		boolean last = this.tutorialStep == TUTORIAL.length - 1;
 		String nextLabel = last ? "Done" : "Next";
@@ -783,7 +736,6 @@ public class IndexScreen extends Screen {
 			this.tutorialBack.set(0, 0, 0, 0);
 		}
 
-		// Progress dots, centred in the gap between Skip and Next, on the button row.
 		int dots = TUTORIAL.length;
 		int dotGap = 8;
 		int dotsWidth = dots * 3 + (dots - 1) * (dotGap - 3);
@@ -819,8 +771,6 @@ public class IndexScreen extends Screen {
 		Settings.markTutorialSeen();
 	}
 
-	// ------------------------------------------------------------------ chrome
-
 	private void renderTopBar(GuiGraphics ctx, int mouseX, int mouseY) {
 		ctx.fill(0, 0, this.width, TOP_BAR_HEIGHT, Theme.SURFACE);
 		ctx.fill(0, TOP_BAR_HEIGHT - 1, this.width, TOP_BAR_HEIGHT, Theme.HAIRLINE);
@@ -830,7 +780,6 @@ public class IndexScreen extends Screen {
 		int titleX = OUTER_MARGIN;
 		int titleRoom = searchX - titleX - 8;
 
-		// "The Schematic" in white, "Index" in the accent, dropping to single scale when cramped.
 		String lead = "The Schematic ";
 		String tail = "Index";
 
@@ -859,7 +808,6 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.closeButton, "Close", mouseX, mouseY, false);
 	}
 
-	/** The Browse and Saved pages carry the grid, chip row and search bar; the others do not. */
 	private boolean gridPage() {
 		return this.page == Page.BROWSE || this.page == Page.SAVED;
 	}
@@ -886,17 +834,15 @@ public class IndexScreen extends Screen {
 			int iconX = rect.x + (RAIL_WIDTH - 17) / 2;
 			int iconY = rect.y + (RAIL_ITEM_HEIGHT - 16) / 2;
 
-			// The icon tile grows on hover and pops when its tab is selected.
 			float hover = Theme.buttonHover(rect, hovered);
 			float scale = Theme.popScale(rect, 1.0F + RAIL_HOVER_GROW * hover);
 			Theme.pushScale(ctx, iconX - 2, iconY - 2, 20, 20, scale);
-			// A lighter tile behind each icon so they read as buttons rather than floating items.
+
 			Theme.roundedRect(ctx, iconX - 2, iconY - 2, 20, 20, Theme.RADIUS_PILL,
 					active ? Theme.RAIL_TILE_ACTIVE : Theme.RAIL_TILE);
 			ctx.renderItem(pages[i].icon(), iconX, iconY);
 			Theme.pop(ctx);
 
-			// Label appears beside the rail on hover, so the icons stay uncluttered.
 			if (hovered && !active) {
 				String label = pages[i].label;
 				int width = this.font.width(label) + 8;
@@ -913,7 +859,6 @@ public class IndexScreen extends Screen {
 
 		Theme.pushScale(ctx, rect.x, rect.y, rect.width, rect.height, scale);
 
-		// Hover shifts the fill slightly lighter rather than darker, per the requested feel.
 		int fill = Theme.lighten(primary ? Theme.ACCENT : Theme.SURFACE_CARD, 0.12F * hover);
 		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL, fill);
 
@@ -930,7 +875,6 @@ public class IndexScreen extends Screen {
 		Theme.pop(ctx);
 	}
 
-	/** A labelled on/off row: filled accent square when on, hollow when off. */
 	private void toggle(GuiGraphics ctx, Rect rect, String label, boolean on, int mouseX, int mouseY) {
 		boolean hovered = rect.contains(mouseX, mouseY);
 		float hover = Theme.buttonHover(rect, hovered);
@@ -957,7 +901,6 @@ public class IndexScreen extends Screen {
 		Theme.pop(ctx);
 	}
 
-	/** A thin track with a draggable knob, value 0..1. Used by the layer control. */
 	private void slider(GuiGraphics ctx, Rect rect, float value, int mouseX, int mouseY) {
 		float clamped = Math.max(0.0F, Math.min(1.0F, value));
 		int trackY = rect.y + rect.height / 2 - 1;
@@ -972,7 +915,6 @@ public class IndexScreen extends Screen {
 				hovered || this.draggingLayer ? Theme.ACCENT_BRIGHT : Theme.TEXT);
 	}
 
-	/** Save-for-later toggle: filled accent when kept, hollow outline when not. */
 	private void saveButton(GuiGraphics ctx, Rect rect, boolean saved, int mouseX, int mouseY) {
 		boolean hovered = rect.contains(mouseX, mouseY);
 		float hover = Theme.buttonHover(rect, hovered);
@@ -1005,11 +947,6 @@ public class IndexScreen extends Screen {
 		Theme.pop(ctx);
 	}
 
-	/**
-	 * The Download button doubles as its own progress bar: a lighter green grows left to right over
-	 * the accent fill as real bytes land, and the label counts up. Polled every frame from
-	 * {@link Download}, so it tracks the actual transfer rather than playing a fixed animation.
-	 */
 	private void downloadButton(GuiGraphics ctx, Rect rect, SchematicEntry entry, int mouseX, int mouseY) {
 		boolean hovered = rect.contains(mouseX, mouseY);
 		float hover = Theme.buttonHover(rect, hovered);
@@ -1023,7 +960,6 @@ public class IndexScreen extends Screen {
 		String label = "Download";
 
 		if (progress != null) {
-			// Announce a finish or failure once, on the frame the state first changes.
 			if (progress.state() != this.downloadStates.get(entry.id())) {
 				if (progress.state() == Download.State.DONE) {
 					Theme.success();
@@ -1094,8 +1030,6 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.sortButton, "Sort: " + this.sort.label(), mouseX, mouseY, false);
 	}
 
-	// ------------------------------------------------------------------ grid
-
 	private void renderGrid(GuiGraphics ctx, int mouseX, int mouseY) {
 		Catalogue.State state = Catalogue.state();
 
@@ -1140,7 +1074,6 @@ public class IndexScreen extends Screen {
 			}
 		}
 
-		// A "loading more" line under the last row while further pages are still to be revealed.
 		if (shown < this.visible.size()) {
 			int rows = (shown + this.columns - 1) / this.columns;
 			int y = this.gridTop + rows * rowHeight - Math.round(this.scroll) + 4;
@@ -1152,11 +1085,6 @@ public class IndexScreen extends Screen {
 		ctx.disableScissor();
 	}
 
-	/**
-	 * Placeholder cards for when the index has not arrived: a shimmer while connecting, and a frozen
-	 * version behind a message when the connection failed. Better than an empty screen, and it shows
-	 * the shape of what is coming.
-	 */
 	private void renderSkeleton(GuiGraphics ctx, boolean offline, int mouseX, int mouseY) {
 		ctx.enableScissor(this.contentX, this.gridTop, this.contentX + this.contentWidth, this.gridBottom);
 
@@ -1176,7 +1104,6 @@ public class IndexScreen extends Screen {
 				Theme.roundedRect(ctx, x + 5, y + imageHeight + 15, this.cardWidth / 3, 5, 1, Theme.SKELETON);
 
 				if (!offline) {
-					// A band sweeps across the placeholders so it reads as loading, not as broken.
 					int span = this.cardWidth + 40;
 					int offset = (int) ((now / 4L + (long) (row + column) * 40L) % span) - 20;
 					int shimmerX = x + offset;
@@ -1195,7 +1122,6 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
-		// Offline: dim the placeholders and say what happened.
 		ctx.fill(this.contentX, this.gridTop, this.contentX + this.contentWidth, this.gridBottom, 0xCC0F1114);
 
 		String headline = "Can't reach the index";
@@ -1246,13 +1172,10 @@ public class IndexScreen extends Screen {
 
 		int textX = x + 5;
 		int textWidth = this.cardWidth - 10;
-		// clipBold, not clip: the bold format code widens each glyph, so a title measured plain then
-		// bolded used to overrun the card. The card shows the short thumbnail name.
+
 		Theme.text(ctx, this.font, Theme.bold(Theme.clipBold(this.font, entry.cardName(), textWidth)),
 				textX, y + imageHeight + 6, Theme.TEXT);
 
-		// Right-aligned download glyph + count, then the poster gets whatever room is left, so a long
-		// username can never push the count off the card.
 		int metaY = y + imageHeight + 6 + this.font.lineHeight + 2;
 		String downloads = entry.downloadsLabel();
 		int countWidth = this.font.width(downloads);
@@ -1285,8 +1208,6 @@ public class IndexScreen extends Screen {
 		int barX = Math.min(this.contentX + this.contentWidth + 2, this.width - 4);
 		Theme.roundedRect(ctx, barX, barY, 3, barHeight, 1, Theme.HAIRLINE);
 	}
-
-	// ------------------------------------------------------------------ upload page
 
 	private void renderUpload(GuiGraphics ctx, int mouseX, int mouseY, float partialTick) {
 		int formWidth = Math.min(this.contentWidth, 300);
@@ -1325,7 +1246,6 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.signOutButton, "Sign out", mouseX, mouseY, false);
 		y += 24;
 
-		// Full schematic name - shown on the post's detail panel. Capped so it can't run under the age.
 		Theme.text(ctx, this.font, "Schematic name", formX, y, Theme.TEXT_ASH);
 		Theme.text(ctx, this.font, "on the post page",
 				formX + formWidth - this.font.width("on the post page"), y, Theme.TEXT_ASH);
@@ -1333,7 +1253,6 @@ public class IndexScreen extends Screen {
 		this.field(ctx, this.titleBox, formX, y, formWidth, mouseX, mouseY, partialTick);
 		y += FIELD_HEIGHT + 11;
 
-		// Short name for the card. Defaults to the schematic name if left blank.
 		Theme.text(ctx, this.font, "Thumbnail name", formX, y, Theme.TEXT_ASH);
 		Theme.text(ctx, this.font, "on the card",
 				formX + formWidth - this.font.width("on the card"), y, Theme.TEXT_ASH);
@@ -1355,7 +1274,6 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.formCategoryButton, "Category: " + this.formCategory.label(), mouseX, mouseY, false);
 		y += FIELD_HEIGHT + 13;
 
-		// The schematic itself - the one genuinely required file.
 		Theme.text(ctx, this.font, "Schematic file", formX, y, Theme.TEXT_ASH);
 		y += this.font.lineHeight + 3;
 
@@ -1371,7 +1289,6 @@ public class IndexScreen extends Screen {
 				this.formSchematic == null ? Theme.TEXT_ASH : Theme.ACCENT_BRIGHT);
 		y += this.font.lineHeight + 12;
 
-		// Image picker. Stands in for the web upload form's file picker plus crop step.
 		Theme.text(ctx, this.font, "Pictures", formX, y, Theme.TEXT_ASH);
 		y += this.font.lineHeight + 3;
 
@@ -1439,8 +1356,6 @@ public class IndexScreen extends Screen {
 		box.render(ctx, mouseX, mouseY, partialTick);
 	}
 
-	// ------------------------------------------------------------------ settings page
-
 	private void renderSettings(GuiGraphics ctx, int mouseX, int mouseY) {
 		int formWidth = Math.min(this.contentWidth, 360);
 		int formX = this.contentX + (this.contentWidth - formWidth) / 2;
@@ -1463,7 +1378,6 @@ public class IndexScreen extends Screen {
 				"Get a toast when a creator you follow posts a new schematic.",
 				Settings.notifications(), formX, y, formWidth, mouseX, mouseY);
 
-		// Grid density.
 		y += 6;
 		Theme.text(ctx, this.font, Theme.bold("Grid density"), formX, y, Theme.TEXT);
 		y += this.font.lineHeight + 3;
@@ -1480,7 +1394,6 @@ public class IndexScreen extends Screen {
 		this.gridDensityButton.set(formX, y, densityWidth, FIELD_HEIGHT);
 		this.pillButton(ctx, this.gridDensityButton, "Grid: " + Settings.gridDensityLabel(), mouseX, mouseY, false);
 
-		// Download folder, below the grid density.
 		y += FIELD_HEIGHT + 12;
 		Theme.text(ctx, this.font, Theme.bold("Download folder"), formX, y, Theme.TEXT);
 		y += this.font.lineHeight + 3;
@@ -1515,7 +1428,6 @@ public class IndexScreen extends Screen {
 			this.resetFolderButton.set(0, 0, 0, 0);
 		}
 
-		// Cache, at the bottom.
 		y += FIELD_HEIGHT + 12;
 		Theme.text(ctx, this.font, Theme.bold("Cache"), formX, y, Theme.TEXT);
 		y += this.font.lineHeight + 3;
@@ -1531,7 +1443,6 @@ public class IndexScreen extends Screen {
 		this.clearCacheButton.set(formX, y, clearWidth, FIELD_HEIGHT);
 		this.pillButton(ctx, this.clearCacheButton, "Clear cache", mouseX, mouseY, false);
 
-		// Terms of service.
 		y += FIELD_HEIGHT + 12;
 		Theme.text(ctx, this.font, Theme.bold("Terms of service"), formX, y, Theme.TEXT);
 		y += this.font.lineHeight + 3;
@@ -1561,8 +1472,6 @@ public class IndexScreen extends Screen {
 
 		return y + 8;
 	}
-
-	// ------------------------------------------------------------------ news page
 
 	private void renderNews(GuiGraphics ctx) {
 		int top = TOP_BAR_HEIGHT + 10;
@@ -1594,7 +1503,6 @@ public class IndexScreen extends Screen {
 		}
 	}
 
-	/** Draws one news card and returns its height, whether or not it was on screen. */
 	private int renderNewsCard(GuiGraphics ctx, NewsFeed.Entry entry, int x, int y, int width,
 			int clipTop, int clipBottom) {
 		int pad = 10;
@@ -1614,7 +1522,6 @@ public class IndexScreen extends Screen {
 		int cardHeight = pad + headerHeight + 4 + this.font.lineHeight + 4
 				+ body.size() * (this.font.lineHeight + 2) + pad;
 
-		// Off-screen cards still count toward the scroll height, they just skip drawing.
 		if (y + cardHeight < clipTop || y > clipBottom) {
 			return cardHeight;
 		}
@@ -1647,8 +1554,6 @@ public class IndexScreen extends Screen {
 		return cardHeight;
 	}
 
-	// ------------------------------------------------------------------ detail modal
-
 	private void renderDetail(GuiGraphics ctx, int mouseX, int mouseY) {
 		SchematicEntry entry = this.detail;
 
@@ -1656,13 +1561,10 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
-		// The scrim fades in rather than snapping, which takes the hard edge off opening a post.
 		long open = System.currentTimeMillis() - this.detailOpenedAt;
 		float fade = Math.min(1.0F, Math.max(0.0F, open / 140.0F));
 		ctx.fill(0, 0, this.width, this.height, ((int) (0x99 * fade) << 24));
 
-		// Post menus run larger across the board, and the picture and model views each take a further
-		// quarter again - the render earns the extra room, the metadata column does not need it.
 		int modalWidth = Math.min(this.contentWidth, this.detailModel ? 688 : 550);
 		int modalHeight = Math.min(this.height - 24, this.detailModel ? 362 : 290);
 		int x = (this.width - modalWidth) / 2;
@@ -1702,8 +1604,6 @@ public class IndexScreen extends Screen {
 
 		this.detailImageRect.set(x + pad, y + pad, imageWidth, imageHeight);
 
-		// Arrows are for the picture gallery only. In model view the image itself is the control:
-		// drag it to spin the build.
 		if (!this.detailModel && entry.imageCount() > 1) {
 			this.detailPrev.set(x + pad + 2, y + pad + imageHeight / 2 - 8, 12, 16);
 			this.detailNext.set(x + pad + imageWidth - 14, y + pad + imageHeight / 2 - 8, 12, 16);
@@ -1730,7 +1630,6 @@ public class IndexScreen extends Screen {
 		int infoWidth = modalWidth - (infoX - x) - pad;
 		int line = y + pad;
 
-		// Age sits in the corner, right of the title.
 		String age = entry.agoLabel();
 		int ageWidth = this.font.width(age);
 		Theme.text(ctx, this.font, age, x + modalWidth - pad - ageWidth, y + pad, Theme.TEXT_ASH);
@@ -1738,8 +1637,7 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, Theme.bold(Theme.clipBold(this.font, entry.title(), infoWidth - ageWidth - 6)),
 				infoX, line, Theme.TEXT);
 		line += this.font.lineHeight + 4;
-		// Compact follow pill at the right end of the "Posted by" line. "Following" fills accent; the
-		// "Follow" and "Unfollow?" confirm states are outlined so they read differently.
+
 		if (this.followConfirm && System.currentTimeMillis() - this.followConfirmAt > 3000L) {
 			this.followConfirm = false;
 		}
@@ -1791,8 +1689,6 @@ public class IndexScreen extends Screen {
 			this.toggle(ctx, this.freeLookToggle, "Look around", this.freeLook, mouseX, mouseY);
 			line += FIELD_HEIGHT + 6;
 
-			// Layer slider: peel off the top of the build to look inside without moving the camera. The
-			// count is real block layers of the model being shown, 1 to its Y height.
 			int totalLayers = this.detailLayerHeight();
 			int shownLayers = Math.max(1, Math.min(totalLayers, Math.round(this.detailLayer * totalLayers)));
 			String layerLabel = shownLayers + " / " + totalLayers;
@@ -1825,7 +1721,7 @@ public class IndexScreen extends Screen {
 		}
 
 		int buttonY = y + modalHeight - pad - 16;
-		// A little wider than the label so the progress fill and its percentage have room.
+
 		int downloadWidth = this.font.width(Theme.bold("Downloading")) + 18;
 		String previewLabel = this.detailModel ? "Pictures" : "3D preview";
 		int previewWidth = this.font.width(Theme.bold(previewLabel)) + 18;
@@ -1843,8 +1739,6 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.detailPreview3d, previewLabel, mouseX, mouseY, false);
 		this.downloadButton(ctx, this.detailDownload, entry, mouseX, mouseY);
 
-		// A small boxed X straddling the top-right corner, the close affordance people expect. Drawn
-		// last so it sits above the modal edge; scales on hover like the other buttons.
 		int cornerSize = 14;
 		this.detailCornerClose.set(x + modalWidth - cornerSize / 2, y - cornerSize / 2, cornerSize, cornerSize);
 		boolean cornerHover = this.detailCornerClose.contains(mouseX, mouseY);
@@ -1859,7 +1753,6 @@ public class IndexScreen extends Screen {
 				cornerHover ? Theme.ON_ACCENT : Theme.TEXT_MUTE);
 		Theme.pop(ctx);
 
-		// A report flag button straddling the bottom-left corner of the modal.
 		int flagSize = 22;
 		this.detailReport.set(x - flagSize / 2, y + modalHeight - flagSize / 2, flagSize, flagSize);
 		boolean flagHover = this.detailReport.contains(mouseX, mouseY);
@@ -1874,7 +1767,6 @@ public class IndexScreen extends Screen {
 				flagHover ? Theme.ON_ACCENT : Theme.TEXT);
 		Theme.pop(ctx);
 
-		// Tooltip so it is clear what the flag does.
 		if (flagHover) {
 			String tip = "Report this Post";
 			int tipWidth = this.font.width(tip) + 8;
@@ -1885,7 +1777,6 @@ public class IndexScreen extends Screen {
 		}
 	}
 
-	/** The reason picker shown after the report flag is tapped. Modal-over-modal, like the confirm card. */
 	private void renderReportPicker(GuiGraphics ctx, int mouseX, int mouseY) {
 		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
 
@@ -1898,7 +1789,6 @@ public class IndexScreen extends Screen {
 				"Only report posts that break the rules. False reports are taken seriously and can get "
 						+ "your account banned from the Index.", cardWidth - pad * 2, 4);
 
-		// Spacing constants, so the card height and the layout below stay in step.
 		int titleToWarning = 12;
 		int warningToReasons = 16;
 		int reasonsToDivider = 10;
@@ -1934,7 +1824,6 @@ public class IndexScreen extends Screen {
 			rowY += rowHeight + reasonGap;
 		}
 
-		// A divider so Cancel reads as a separate action, not one more reason.
 		rowY += reasonsToDivider - reasonGap;
 		ctx.fill(x + pad, rowY, x + cardWidth - pad, rowY + 1, Theme.HAIRLINE);
 		rowY += 1 + dividerToCancel;
@@ -1943,7 +1832,6 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.reportCancel, "Cancel", mouseX, mouseY, false);
 	}
 
-	/** Wraps text that contains explicit line breaks; a blank source line becomes a blank spacer line. */
 	private List<String> wrapParagraphs(String text, int width) {
 		List<String> out = new ArrayList<>();
 
@@ -1958,10 +1846,6 @@ public class IndexScreen extends Screen {
 		return out;
 	}
 
-	/**
-	 * Wraps to a fixed width like a text editor: it prefers to break at a space, but a run too long to
-	 * fit on a line on its own is broken mid-word, so text can never spill past the box.
-	 */
 	private List<String> wrapContext(String text, int width) {
 		List<String> lines = new ArrayList<>();
 		StringBuilder current = new StringBuilder();
@@ -1973,7 +1857,6 @@ public class IndexScreen extends Screen {
 				continue;
 			}
 
-			// Overflowed this line: back up to the last space if there is one, else hard-break.
 			int lastSpace = current.lastIndexOf(" ");
 
 			if (lastSpace > 0) {
@@ -1990,10 +1873,6 @@ public class IndexScreen extends Screen {
 		return lines;
 	}
 
-	/**
-	 * The second report step: a "Context" box the reporter can type a short explanation into. The box
-	 * and the card both grow downward as the text wraps onto more lines.
-	 */
 	private void renderReportContext(GuiGraphics ctx, int mouseX, int mouseY) {
 		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
 
@@ -2002,7 +1881,6 @@ public class IndexScreen extends Screen {
 		int cardWidth = 236;
 		int boxInner = cardWidth - pad * 2 - 12;
 
-		// Wrap the current text to know how tall the box needs to be (grows with the number of lines).
 		List<String> lines = this.wrapContext(this.reportContext, boxInner);
 		int textLines = Math.max(1, lines.size());
 		int boxHeight = 8 + textLines * (line + 1) + 6;
@@ -2020,7 +1898,6 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, "Explain the report - under 100 characters.", x + pad, ty, Theme.TEXT_ASH);
 		ty += line + 8;
 
-		// The growing input box.
 		int boxX = x + pad;
 		int boxWidth = cardWidth - pad * 2;
 		Theme.roundedRect(ctx, boxX, ty, boxWidth, boxHeight, Theme.RADIUS_PILL, Theme.BACKDROP);
@@ -2038,7 +1915,6 @@ public class IndexScreen extends Screen {
 			}
 		}
 
-		// Blinking caret at the end of the last line.
 		if ((System.currentTimeMillis() / 500L) % 2L == 0L) {
 			String last = lines.isEmpty() ? "" : lines.get(lines.size() - 1);
 			int caretX = this.reportContext.isEmpty() ? textX : textX + this.font.width(last);
@@ -2055,10 +1931,6 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.reportSubmit, "Submit report", mouseX, mouseY, true);
 	}
 
-	/**
-	 * A small confirm card over the detail modal, shown when a download would replace a file the
-	 * player already has. Modal-over-modal: it darkens the rest and captures clicks until answered.
-	 */
 	private void renderOverwriteConfirm(GuiGraphics ctx, int mouseX, int mouseY) {
 		SchematicEntry entry = this.pendingOverwrite;
 
@@ -2080,7 +1952,7 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, Theme.bold("Replace existing file?"), x + pad, y + pad, Theme.TEXT);
 
 		int textY = y + pad + this.font.lineHeight + 4;
-		// Show the actual saved file name - the post's full title, which is what the download uses.
+
 		String name = Theme.clip(this.font, entry.title() + ".litematic", cardWidth - pad * 2);
 		Theme.text(ctx, this.font, name, x + pad, textY, Theme.ACCENT_BRIGHT);
 
@@ -2134,8 +2006,6 @@ public class IndexScreen extends Screen {
 		return lines;
 	}
 
-	// ------------------------------------------------------------------ input
-
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
 		double mouseX = event.x();
@@ -2143,13 +2013,11 @@ public class IndexScreen extends Screen {
 
 		this.registerButtonPress(mouseX, mouseY);
 
-		// The terms gate is absolute: nothing else responds until it is answered.
 		if (this.tosOpen) {
 			this.clickTos(mouseX, mouseY);
 			return true;
 		}
 
-		// The tour owns the screen while it is up: only its own buttons respond.
 		if (this.tutorialActive) {
 			this.clickTutorial(mouseX, mouseY);
 			return true;
@@ -2206,8 +2074,6 @@ public class IndexScreen extends Screen {
 			return this.clickSettings(mouseX, mouseY);
 		}
 
-		// The News tab is read-only; its cards are not clickable, so swallow clicks here rather than
-		// letting them fall through to the grid's entry hit-testing.
 		if (this.page == Page.NEWS) {
 			return true;
 		}
@@ -2248,8 +2114,7 @@ public class IndexScreen extends Screen {
 				}
 			} else {
 				this.detail = hit;
-				// Decode the whole gallery up front so flipping through it never stalls; the textures
-				// stay cached, so coming back to this post is instant too.
+
 				if (hit.imageUrls().isEmpty()) {
 					ImageStore.preload(hit.imageStart(), hit.imageCount());
 				} else {
@@ -2278,7 +2143,6 @@ public class IndexScreen extends Screen {
 
 	private void switchPage(Page target) {
 		if (target != this.page) {
-			// Tabs chime like amethyst so navigating feels different from pressing a button.
 			Theme.tab();
 		}
 
@@ -2294,7 +2158,6 @@ public class IndexScreen extends Screen {
 	private boolean clickUpload(MouseButtonEvent event, boolean doubleClick, double mouseX, double mouseY) {
 		if (!UploaderAccess.unlocked()) {
 			if (this.unlockButton.contains(mouseX, mouseY)) {
-				// The code is checked against the server, so do it off-thread and report back.
 				String value = this.codeBox.getValue();
 				this.formStatus = "Checking code...";
 				this.setFocused(null);
@@ -2367,7 +2230,7 @@ public class IndexScreen extends Screen {
 	private boolean clickSettings(double mouseX, double mouseY) {
 		if (this.soundsToggle.contains(mouseX, mouseY)) {
 			Settings.toggleSounds();
-			// Plays only if sound is now on, which is its own confirmation.
+
 			Theme.click(1.2F);
 		} else if (this.overwriteToggle.contains(mouseX, mouseY)) {
 			Settings.toggleConfirmOverwrite();
@@ -2390,7 +2253,7 @@ public class IndexScreen extends Screen {
 		} else if (this.gridDensityButton.contains(mouseX, mouseY)) {
 			Theme.click();
 			Settings.cycleGridDensity();
-			// Recompute the grid so the new column count takes effect immediately.
+
 			this.columns = Math.max(2, Math.min(7, columnsFor(this.contentWidth) + Settings.gridDensity()));
 			this.cardWidth = (this.contentWidth - GUTTER * (this.columns - 1)) / this.columns;
 			this.cardHeight = imageHeight(this.cardWidth) + CAPTION_HEIGHT;
@@ -2410,7 +2273,6 @@ public class IndexScreen extends Screen {
 		return true;
 	}
 
-	/** Native folder chooser, on its own thread so the blocking dialog does not freeze the render loop. */
 	private void openDownloadPicker() {
 		new Thread(() -> {
 			String result;
@@ -2449,21 +2311,17 @@ public class IndexScreen extends Screen {
 		float fraction = (float) ((mouseX - this.layerSlider.x) / this.layerSlider.width);
 		fraction = Math.max(0.0F, Math.min(1.0F, fraction));
 
-		// Snap to whole layers of the rendered model, floored at 1 so the bottom slice always renders.
 		int total = this.detailLayerHeight();
 		int layers = Math.max(1, Math.min(total, Math.round(fraction * total)));
 		this.detailLayer = (float) layers / total;
 	}
 
-	/** The Y height, in block layers, of the model currently in the 3D preview. */
 	private int detailLayerHeight() {
 		int height = this.detail == null ? -1 : SchematicPreview.layerHeight(this.detail.schematicSlot());
 		return height > 0 ? height : Math.max(1, this.detail == null ? 1 : this.detail.sizeY());
 	}
 
 	private void startDownload(SchematicEntry entry) {
-		// Ask before clobbering a file the player already has, when they have opted into the prompt. A
-		// download that already finished for this post re-runs freely - the button reads "Saved".
 		if (Settings.confirmOverwrite() && this.pendingOverwrite == null) {
 			Download.Progress progress = Download.progress(entry.id());
 			boolean alreadyDone = progress != null && progress.state() == Download.State.DONE;
@@ -2485,7 +2343,6 @@ public class IndexScreen extends Screen {
 		if (url != null && !url.isBlank()) {
 			Download.start(entry.id(), entry.title() + ".litematic", url, null);
 		} else {
-			// A locally-picked upload preview with no server URL: copy the file directly.
 			Path source = SchematicPreview.pathFor(entry.schematicSlot());
 
 			if (source == null) {
@@ -2570,11 +2427,6 @@ public class IndexScreen extends Screen {
 		worker.start();
 	}
 
-	/**
-	 * Native file chooser, via the tinyfd library Minecraft already ships. It runs on its own thread
-	 * because the dialog blocks until the user chooses, and the selection is applied back on the
-	 * render thread.
-	 */
 	private void openPicturePicker() {
 		new Thread(() -> {
 			String result;
@@ -2672,7 +2524,7 @@ public class IndexScreen extends Screen {
 		} else if (this.freeLookToggle.contains(mouseX, mouseY)) {
 			this.freeLook = !this.freeLook;
 			Theme.click(this.freeLook ? 1.3F : 0.9F);
-			// Freeze the eye where the orbit camera was, so toggling does not teleport the view.
+
 			this.freeEye = this.freeLook
 					? SchematicPreview.eye(entry.schematicSlot(), this.detailYaw, this.detailPitch,
 							this.detailZoom, this.cutaway)
@@ -2691,7 +2543,6 @@ public class IndexScreen extends Screen {
 						new ItemStack(Items.PLAYER_HEAD));
 				this.followConfirm = false;
 			} else if (!this.followConfirm) {
-				// First click while following asks to confirm instead of dropping it straight away.
 				this.followConfirm = true;
 				this.followConfirmAt = System.currentTimeMillis();
 				Theme.click(0.9F);
@@ -2717,7 +2568,6 @@ public class IndexScreen extends Screen {
 			Rect rect = this.reportReasonRects[i];
 
 			if (rect != null && rect.contains(mouseX, mouseY)) {
-				// Move on to the context step so they can explain the report.
 				this.reportOpen = false;
 				this.reportContextOpen = true;
 				this.reportReasonIndex = i;
@@ -2737,7 +2587,6 @@ public class IndexScreen extends Screen {
 		if (this.reportSubmit.contains(mouseX, mouseY)) {
 			this.submitReport();
 		}
-		// Clicks elsewhere are swallowed; Esc backs out.
 	}
 
 	private void submitReport() {
@@ -2770,7 +2619,6 @@ public class IndexScreen extends Screen {
 			Theme.click(0.9F);
 			this.status = "";
 		}
-		// A click anywhere else on the scrim is swallowed: the card stays until it is answered.
 	}
 
 	private void resetCamera() {
@@ -2848,11 +2696,7 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
-		// Orbiting continues while the button is held, even once the cursor leaves the preview -
-		// otherwise a fast drag stops dead at the panel edge.
 		if (this.orbiting && this.detail != null && this.detailModel) {
-			// Free orbit: the model follows the mouse. Pitch stops short of the poles, where the
-			// camera basis degenerates.
 			this.detailYaw = (this.detailYaw + (float) dragX * 0.8F) % 360.0F;
 			this.detailPitch = Math.max(-88.0F, Math.min(88.0F, this.detailPitch + (float) dragY * 0.8F));
 			return true;
@@ -2868,7 +2712,6 @@ public class IndexScreen extends Screen {
 		return super.mouseReleased(event);
 	}
 
-	/** Plays the press dip on whichever animated button a click landed on. */
 	private void registerButtonPress(double mouseX, double mouseY) {
 		Rect[] buttons;
 
@@ -2924,7 +2767,6 @@ public class IndexScreen extends Screen {
 		}
 
 		if (this.detail != null) {
-			// Look-around mode is a fixed viewpoint: turning is allowed, moving is not.
 			if (this.detailModel && !this.freeLook && this.detailImageRect.contains(mouseX, mouseY)) {
 				float factor = scrollY > 0 ? 1.18F : 1.0F / 1.18F;
 				this.detailZoom = SchematicPreview.clampZoom(this.detail.schematicSlot(), this.detailZoom * factor);
@@ -2933,7 +2775,6 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
-		// Upload and Settings are fixed-height forms; only the grid and news pages scroll.
 		if (this.page == Page.UPLOAD || this.page == Page.SETTINGS) {
 			return true;
 		}
@@ -2944,7 +2785,6 @@ public class IndexScreen extends Screen {
 
 	@Override
 	public boolean charTyped(CharacterEvent event) {
-		// The context box captures typing directly, up to the character limit.
 		if (this.reportContextOpen) {
 			if (event.codepoint() >= ' ' && this.reportContext.length() < REPORT_CONTEXT_MAX) {
 				this.reportContext += event.codepointAsString();
@@ -2958,7 +2798,6 @@ public class IndexScreen extends Screen {
 
 	@Override
 	public boolean keyPressed(KeyEvent event) {
-		// The terms gate swallows keys; Esc counts as declining, but only once it can be answered.
 		if (this.tosOpen) {
 			if (event.key() == 256 && this.tosScrolledBottom) {
 				Settings.revokeTerms();
@@ -2968,7 +2807,6 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
-		// During the tour, Esc skips it and other keys are swallowed.
 		if (this.tutorialActive) {
 			if (event.key() == 256) {
 				this.finishTutorial();
@@ -2977,7 +2815,6 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
-		// Context box: backspace edits, Enter submits, Esc backs out to the detail modal.
 		if (this.reportContextOpen) {
 			switch (event.key()) {
 				case 259 -> {
@@ -2995,7 +2832,6 @@ public class IndexScreen extends Screen {
 		}
 
 		if (event.key() == 256 && this.detail != null) {
-			// Esc backs out of a prompt first, leaving the detail modal open.
 			if (this.pendingOverwrite != null) {
 				this.pendingOverwrite = null;
 				this.status = "";
@@ -3025,7 +2861,6 @@ public class IndexScreen extends Screen {
 		}
 	}
 
-	/** Simple mutable hit rect - avoids allocating on every frame. */
 	private static final class Rect {
 		private int x;
 		private int y;

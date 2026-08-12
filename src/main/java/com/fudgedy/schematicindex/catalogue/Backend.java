@@ -22,10 +22,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * The one place the mod talks to the catalogue server. Everything is blocking, so callers run it on a
- * worker thread. The base URL and device token come from {@link Settings}.
- */
 public final class Backend {
 	private static final HttpClient CLIENT = HttpClient.newBuilder()
 			.connectTimeout(Duration.ofSeconds(6))
@@ -47,7 +43,6 @@ public final class Backend {
 		return URLEncoder.encode(value, StandardCharsets.UTF_8);
 	}
 
-	/** GET a path and parse the response as a JSON object, or null on any failure. */
 	public static @Nullable JsonObject getJson(String path) {
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + path))
@@ -68,7 +63,6 @@ public final class Backend {
 		}
 	}
 
-	/** POST a JSON body with the device token, returning the status code (or -1 on failure). */
 	public static int postJson(String path, String jsonBody) {
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + path))
@@ -84,17 +78,14 @@ public final class Backend {
 		}
 	}
 
-	/** Posts a like or unlike for a post, off-thread, ignoring the result. */
 	public static void likeAsync(String postId, boolean like) {
 		fireAndForget(like ? "/like" : "/unlike", one("postId", postId));
 	}
 
-	/** Records a counted download, off-thread. */
 	public static void downloadAsync(String postId) {
 		fireAndForget("/download", one("postId", postId));
 	}
 
-	/** Files a report, off-thread. */
 	public static void reportAsync(String postId, String reason, String note) {
 		JsonObject body = new JsonObject();
 		body.addProperty("postId", postId);
@@ -119,7 +110,6 @@ public final class Backend {
 		return o.toString();
 	}
 
-	/** Downloads raw bytes from a full URL (used to cache a schematic for the preview). */
 	public static byte @Nullable [] getBytes(String url) {
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(url))
@@ -134,7 +124,6 @@ public final class Backend {
 		}
 	}
 
-	/** Checks an upload code and returns the display name it belongs to, or null if it is not valid. */
 	public static @Nullable String checkCode(String code) {
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + "/uploader"))
@@ -155,7 +144,6 @@ public final class Backend {
 		}
 	}
 
-	/** Uploads a post. Returns the HTTP status code; 201 on success. */
 	public static int upload(String code, String metaJson, Path schematic, List<Path> images) {
 		try {
 			String boundary = "----schematicindex" + System.nanoTime();
@@ -179,17 +167,14 @@ public final class Backend {
 		String dash = "--";
 		String crlf = "\r\n";
 
-		// meta field
 		out.write((dash + boundary + crlf).getBytes(StandardCharsets.UTF_8));
 		out.write(("Content-Disposition: form-data; name=\"meta\"" + crlf + crlf).getBytes(StandardCharsets.UTF_8));
 		out.write(metaJson.getBytes(StandardCharsets.UTF_8));
 		out.write(crlf.getBytes(StandardCharsets.UTF_8));
 
-		// schematic file
 		writeFilePart(out, boundary, "schematic", schematic.getFileName().toString(),
 				"application/octet-stream", Files.readAllBytes(schematic));
 
-		// images
 		for (Path image : images) {
 			String name = image.getFileName().toString().toLowerCase();
 			String type = name.endsWith(".jpg") || name.endsWith(".jpeg") ? "image/jpeg" : "image/png";
@@ -210,9 +195,6 @@ public final class Backend {
 		out.write("\r\n".getBytes(StandardCharsets.UTF_8));
 	}
 
-	// ------------------------------------------------------------------ parsing
-
-	/** Turns one post JSON object into a {@link SchematicEntry}, registering its file for preview. */
 	public static SchematicEntry parsePost(JsonObject o) {
 		JsonObject size = o.getAsJsonObject("size");
 		List<String> imageUrls = new ArrayList<>();

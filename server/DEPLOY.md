@@ -6,7 +6,7 @@ The server is a plain Node app (Nixpacks auto-detects it) with two things it nee
 ## 1. Create the project
 
 1. Push this repo to GitHub (the `server/` folder is what Railway builds).
-2. In Railway: **New Project → Deploy from GitHub repo**, pick the repo.
+2. In Railway: **New Project -> Deploy from GitHub repo**, pick the repo.
 3. If the repo root isn't the server, set the service **Root Directory** to `server`.
 
 Railway reads `railway.json` (start command `npm start`, health check `/health`) and `engines.node`
@@ -16,12 +16,12 @@ Railway reads `railway.json` (start command `npm start`, health check `/health`)
 
 SQLite and uploaded files must survive restarts.
 
-1. Service → **Variables/Settings → Volumes → New Volume**.
+1. Service -> **Variables/Settings -> Volumes -> New Volume**.
 2. Mount path: **`/data`**.
 
 ## 3. Set environment variables
 
-Service → **Variables**:
+Service -> **Variables**:
 
 | Variable | Value |
 |---|---|
@@ -30,7 +30,7 @@ Service → **Variables**:
 | `PUBLIC_BASE` | your Railway URL, e.g. `https://schematic-index-production.up.railway.app` |
 | `DISCORD_WEBHOOK` | *(optional)* your private Discord webhook URL for reports |
 
-`PORT` is provided by Railway automatically — don't set it.
+`PORT` is provided by Railway automatically - don't set it.
 
 Generate an owner key:
 
@@ -58,5 +58,5 @@ to the live catalogue.
 
 - **Data is only in the volume.** Back it up periodically (SQLite is one file at `/data/index.db`;
   uploads are under `/data/files/`). Railway can snapshot volumes.
-- No native modules — `node:sqlite`, `multer`, and `prismarine-nbt` are all pure JS, so builds are fast
+- No native modules - `node:sqlite`, `multer`, and `prismarine-nbt` are all pure JS, so builds are fast
   and never fail on a missing compiler.

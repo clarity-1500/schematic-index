@@ -5,7 +5,6 @@ import { registerInteractionRoutes } from './interactions.js';
 import { registerUploadRoutes } from './upload.js';
 import { registerAdminRoutes } from './admin.js';
 
-/** Builds the Express app. Endpoints are added section by section. */
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');

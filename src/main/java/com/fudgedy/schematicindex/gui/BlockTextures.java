@@ -22,25 +22,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-/**
- * Turns block states into the pixels the preview samples.
- *
- * <p>Two stages, because they have different threading rules. Resolving which sprite a face uses
- * needs the block model registry and therefore the render thread; reading the sprite's PNG back off
- * the resource manager does not, and there can be dozens of them, so that half runs on a worker.
- *
- * <p>Sprite pixels are read from the source PNG rather than the stitched atlas: the atlas image is
- * private to {@code SpriteContents}, and going through the resource manager picks up the player's
- * resource pack for free.
- */
 public final class BlockTextures {
 	public static final int NO_TINT = 0xFFFFFFFF;
 
-	/** What the render thread hands back: which sprite each face uses, and its tint. */
 	public record Resolved(Identifier[] sprites, int[] tints) {
 	}
 
-	/** One block's six faces. Missing faces fall back to {@link #averageColor}. */
 	public static final class Faces {
 		private final Texture[] byFace = new Texture[6];
 		private final int[] tints = new int[6];
@@ -60,17 +47,11 @@ public final class BlockTextures {
 			}
 
 			int color = texture.sample(u, v, lod);
-			// Cutout textures (glass, leaves, rails) leave holes; show the block's tone instead of
-			// punching a transparent gap through the middle of a solid-looking build.
+
 			return (color >>> 24) < 16 ? this.averageColor : tint(color, this.tints[face]);
 		}
 	}
 
-	/**
-	 * A sprite plus a mip chain of 2x2-averaged smaller copies. Sampling a distant block - one that
-	 * covers only a few screen pixels - from a coarse level averages the texels a pixel spans, which is
-	 * what stops a noisy texture like stone breaking up into salt-and-pepper grain at a distance.
-	 */
 	record Texture(int[][] mips, int width, int height) {
 		int sample(double u, double v, int lod) {
 			int level = Math.max(0, Math.min(this.mips.length - 1, lod));
@@ -82,7 +63,6 @@ public final class BlockTextures {
 		}
 	}
 
-	/** Builds the mip chain: each level is the previous one box-filtered to half size, down to 1x1. */
 	private static int[][] buildMips(int[] base, int width, int height) {
 		List<int[]> levels = new ArrayList<>();
 		levels.add(base);
@@ -116,7 +96,6 @@ public final class BlockTextures {
 		return levels.toArray(new int[0][]);
 	}
 
-	/** Averages four packed colours lane by lane, so it is independent of channel order. */
 	private static int average(int a, int b, int c, int d) {
 		int c24 = ((a >>> 24) + (b >>> 24) + (c >>> 24) + (d >>> 24)) / 4;
 		int c16 = (((a >> 16) & 0xFF) + ((b >> 16) & 0xFF) + ((c >> 16) & 0xFF) + ((d >> 16) & 0xFF)) / 4;
@@ -130,11 +109,6 @@ public final class BlockTextures {
 	private BlockTextures() {
 	}
 
-	/**
-	 * Multiplies a texel by a tint colour. Leaves, grass, vines and water all ship greyscale
-	 * textures that only become green or blue once the biome colour is applied - without this they
-	 * render a flat grey.
-	 */
 	public static int tint(int color, int tint) {
 		if (tint == NO_TINT) {
 			return color;
@@ -146,14 +120,9 @@ public final class BlockTextures {
 		return (color & 0xFF000000) | (red << 16) | (green << 8) | blue;
 	}
 
-	/**
-	 * Water's blue does not come from the block colour system - the fluid renderer applies it from
-	 * the biome - so it has to be supplied here or water renders as the grey texture it ships as.
-	 */
 	public static final int WATER_TINT = 0xFF3F76E4;
 	private static final int DEFAULT_WATER = WATER_TINT;
 
-	/** Render thread only - reads the baked model registry and the block colour providers. */
 	public static Resolved resolveSprites(BlockState state) {
 		Identifier[] names = new Identifier[6];
 		int[] tints = new int[6];
@@ -201,7 +170,6 @@ public final class BlockTextures {
 		return new Resolved(names, tints);
 	}
 
-	/** Render thread only. A null level makes the colour providers fall back to their defaults. */
 	public static int tintFor(BlockState state, int tintIndex) {
 		if (tintIndex < 0) {
 			return NO_TINT;
@@ -227,12 +195,9 @@ public final class BlockTextures {
 			return null;
 		}
 
-		// Blocks whose geometry is not cube-shaped (crops, torches) put everything in the
-		// direction-less bucket.
 		return quadFor(parts, null);
 	}
 
-	/** Worker thread - decodes the PNGs behind the resolved sprite names. */
 	public static Faces load(Resolved resolved, BlockState state) {
 		Faces faces = new Faces();
 		MapColor mapColor = state.getBlock().defaultMapColor();
@@ -249,7 +214,6 @@ public final class BlockTextures {
 			faces.tints[i] = resolved.tints()[i];
 		}
 
-		// A tinted block whose texture failed to load should still not be grey.
 		faces.averageColor = tint(faces.averageColor, resolved.tints()[Direction.UP.ordinal()]);
 		return faces;
 	}
@@ -280,7 +244,6 @@ public final class BlockTextures {
 			int width = image.getWidth();
 			int height = image.getHeight();
 
-			// Animated textures stack their frames vertically - keep only the first.
 			int frameHeight = height > width && height % width == 0 ? width : height;
 			int[] pixels = new int[width * frameHeight];
 

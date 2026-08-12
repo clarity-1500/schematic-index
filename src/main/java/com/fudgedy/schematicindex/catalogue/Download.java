@@ -17,14 +17,6 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Runs a download and reports honest byte progress.
- *
- * <p>Progress is the bytes actually written over the total expected, so the bar on the button tracks
- * the transfer rather than playing a fixed animation. Over HTTP that comes from Content-Length; for
- * the local beta - where a "download" is a copy out of the schematics folder - it comes from the
- * file size, so a small file really does snap to full instantly.
- */
 public final class Download {
 	public enum State {
 		RUNNING,
@@ -48,15 +40,10 @@ public final class Download {
 		BY_POST.remove(postId);
 	}
 
-	/** Where a given file name would land, so callers can check for an existing file before starting. */
 	public static Path resolveTarget(String fileName) {
 		return Settings.downloadDirectory().resolve(safeName(fileName));
 	}
 
-	/**
-	 * @param url    the index's file URL, once there is a backend
-	 * @param source a local file, which is what the beta copies from
-	 */
 	public static void start(String postId, String fileName, @Nullable String url, @Nullable Path source) {
 		Progress current = BY_POST.get(postId);
 
@@ -133,7 +120,6 @@ public final class Download {
 			output.write(buffer, 0, read);
 			written += read;
 
-			// Unknown length still moves, it just approaches full without claiming to reach it.
 			float fraction = total > 0
 					? Math.min(1.0F, (float) written / total)
 					: 1.0F - 1.0F / (1.0F + written / 65_536.0F);

@@ -11,8 +11,8 @@ const CATEGORIES = new Set([
   'FARMS', 'CONTRAPTIONS', 'REGEARS', 'STASHES', 'GAMBLING_BASES', 'HANGOUT_BASES', 'MEGA_BUILDS',
 ]);
 
-const MAX_SCHEMATIC = 20 * 1024 * 1024; // 20 MB
-const MAX_IMAGE = 8 * 1024 * 1024; // 8 MB
+const MAX_SCHEMATIC = 20 * 1024 * 1024;
+const MAX_IMAGE = 8 * 1024 * 1024;
 const MAX_IMAGES = 5;
 
 const upload = multer({
@@ -33,7 +33,6 @@ const insertPost = db.prepare(`
 `);
 const insertImage = db.prepare('INSERT INTO post_images (post_id, position, file_key) VALUES (?, ?, ?)');
 
-/** Validates an upload code from the header and attaches the row. */
 function requireCode(req, res, next) {
   const code = (req.get('X-Upload-Code') || '').trim();
   const row = code && codeByValue.get(code);
@@ -46,7 +45,6 @@ function requireCode(req, res, next) {
   next();
 }
 
-/** Reads the real dimensions and block count from a .litematic (gzipped NBT). Best-effort. */
 async function readLitematic(buffer) {
   try {
     const { parsed } = await nbt.parse(buffer);
@@ -70,7 +68,6 @@ function imageExtension(mime) {
 }
 
 export function registerUploadRoutes(app) {
-  // The mod's unlock screen checks a code here.
   app.get('/uploader', (req, res) => {
     const code = (req.get('X-Upload-Code') || '').trim();
     const row = code && codeByValue.get(code);
@@ -96,7 +93,6 @@ export function registerUploadRoutes(app) {
     const title = String(meta.title || '').trim();
     const category = String(meta.category || '').toUpperCase();
 
-    // Validation.
     if (!schematic) return res.status(400).json({ error: 'no_schematic', message: 'A .litematic file is required.' });
     if (!schematic.originalname.toLowerCase().endsWith('.litematic')) {
       return res.status(400).json({ error: 'bad_file', message: 'The schematic must be a .litematic file.' });
@@ -118,12 +114,10 @@ export function registerUploadRoutes(app) {
     const id = crypto.randomBytes(8).toString('hex');
     const dims = await readLitematic(schematic.buffer);
 
-    // Store the schematic.
     const fileKey = `sch/${id}.litematic`;
     fs.writeFileSync(path.join(paths.files, fileKey), schematic.buffer);
     const fileHash = 'sha256:' + crypto.createHash('sha256').update(schematic.buffer).digest('hex');
 
-    // Store the images.
     const imageKeys = images.map((img, i) => {
       const key = `img/${id}_${i}.${imageExtension(img.mimetype)}`;
       fs.writeFileSync(path.join(paths.files, key), img.buffer);
@@ -144,7 +138,6 @@ export function registerUploadRoutes(app) {
     res.status(201).json(serializePost(row, ''));
   });
 
-  // Turn multer's own errors into clean JSON.
   app.use((err, req, res, next) => {
     if (err instanceof multer.MulterError) {
       return res.status(413).json({ error: 'upload_error', message: err.message });

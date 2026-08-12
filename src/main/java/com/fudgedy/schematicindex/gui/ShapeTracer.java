@@ -1,20 +1,8 @@
 package com.fudgedy.schematicindex.gui;
 
-/**
- * Ray intersection against a block's real model geometry.
- *
- * <p>Used only for blocks that are not plain cubes - stairs, slabs, torches, rails. Everything else
- * takes the raycaster's face-aligned fast path, which is why a build made mostly of full blocks
- * costs no more than it did before models were introduced.
- *
- * <p>Quads are triangulated on the fly (0,1,2 and 0,2,3) and tested with Moller-Trumbore. A hit
- * whose texel is transparent is ignored rather than accepted, so the see-through parts of crops,
- * ladders and rails really are see-through.
- */
 public final class ShapeTracer {
 	private static final double EPSILON = 1.0E-7D;
 
-	/** Set by {@link #trace} when it reports a hit. */
 	public static final class Hit {
 		public double distance;
 		public int color;
@@ -24,10 +12,6 @@ public final class ShapeTracer {
 	private ShapeTracer() {
 	}
 
-	/**
-	 * @param originX ray origin in block-local space (the block occupies 0..1 on every axis)
-	 * @return true when a textured surface was hit, with the result written into {@code hit}
-	 */
 	public static boolean trace(BlockShapes.Shape shape, double originX, double originY, double originZ,
 			double dirX, double dirY, double dirZ, int lod, Hit hit) {
 		BlockShapes.Quad[] quads = shape.quads;
@@ -89,7 +73,6 @@ public final class ShapeTracer {
 					continue;
 				}
 
-				// Interpolate the model's own texture coordinates across the triangle.
 				double texU = quad.us[0] + u * (quad.us[b] - quad.us[0]) + v * (quad.us[c] - quad.us[0]);
 				double texV = quad.vs[0] + u * (quad.vs[b] - quad.vs[0]) + v * (quad.vs[c] - quad.vs[0]);
 
@@ -97,8 +80,6 @@ public final class ShapeTracer {
 						? quad.texture.sample(wrap(texU), wrap(texV), lod)
 						: shape.faces.sample(Math.max(quad.face, 0), wrap(texU), wrap(texV), lod);
 
-				// Transparent texel: the ray carries on through, which is what makes ladders and
-				// crops read correctly instead of as solid panes.
 				if ((color >>> 24) < 16) {
 					continue;
 				}

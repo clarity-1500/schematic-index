@@ -1,8 +1,6 @@
-// Dev seed: fills the News tab with the changelog and adds a couple of sample posts so the read
-// API can be exercised before uploads exist. Safe to re-run - it clears what it inserts first.
 import { db } from '../src/db.js';
 
-const AUG = 7; // month index for August
+const AUG = 7;
 
 const NEWS = [
   ['v0.8', 'Onboarding and terms', 'Aug 12, 2026', 12, 8, 1,

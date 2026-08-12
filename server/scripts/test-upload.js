@@ -1,5 +1,3 @@
-// Dev test for the upload flow: mints a code, builds a tiny valid .litematic (gzipped NBT with
-// real dimensions), posts it multipart, and prints the result. Run with the server up.
 import zlib from 'node:zlib';
 import nbt from 'prismarine-nbt';
 import { db } from '../src/db.js';

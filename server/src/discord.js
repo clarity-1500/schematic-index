@@ -1,9 +1,5 @@
 import { config } from './config.js';
 
-/**
- * Forwards a new report to the configured Discord webhook. Fire-and-forget: the report is already
- * stored, so a webhook failure is only logged. The webhook URL never leaves the server.
- */
 export function reportToDiscord({ post, reason, note, count }) {
   if (!config.discordWebhook) {
     return;

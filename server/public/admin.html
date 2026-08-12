@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Schematic Index — Admin</title>
+<title>Schematic Index - Admin</title>
 <style>
   :root {
     --accent:#2a7a5b; --accent-bright:#3fa87f; --bg:#0f1114; --surface:#171a1e;
@@ -45,7 +45,7 @@
 <body>
 
 <div id="login" class="card">
-  <h1 style="margin-top:0">The Schematic Index — Admin</h1>
+  <h1 style="margin-top:0">The Schematic Index - Admin</h1>
   <p class="muted">Enter your owner key to continue.</p>
   <input id="key" type="password" placeholder="Owner key" autocomplete="off" />
   <div style="margin-top:12px"><button class="primary" onclick="login()">Sign in</button></div>
@@ -54,7 +54,7 @@
 
 <div id="app" class="hide">
   <header>
-    <h1>The Schematic <b>Index</b> — Admin</h1>
+    <h1>The Schematic <b>Index</b> - Admin</h1>
     <div class="sp"></div>
     <button class="small" onclick="logout()">Sign out</button>
   </header>
@@ -74,14 +74,14 @@
         </div>
         <label>Title</label><input id="n-title" placeholder="What changed" />
         <label>Body (blank line = new paragraph)</label><textarea id="n-body"></textarea>
-        <label class="row" style="margin-top:10px"><input id="n-hl" type="checkbox" style="width:auto" /> &nbsp;Highlight (newest — accent badge)</label>
+        <label class="row" style="margin-top:10px"><input id="n-hl" type="checkbox" style="width:auto" /> &nbsp;Highlight (newest - accent badge)</label>
         <div style="margin-top:12px"><button class="primary" onclick="postNews()">Publish update</button></div>
       </div>
       <div class="card"><h3 style="margin-top:0">Published</h3><div id="newsList"></div></div>
     </section>
 
     <section id="tab-posts" class="hide">
-      <div class="card"><table id="postsTable"><thead><tr><th>Title</th><th>Poster</th><th>Cat</th><th>♥</th><th>⤓</th><th>Reports</th><th>State</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="card"><table id="postsTable"><thead><tr><th>Title</th><th>Poster</th><th>Cat</th><th>Likes</th><th>DLs</th><th>Reports</th><th>State</th><th></th></tr></thead><tbody></tbody></table></div>
     </section>
 
     <section id="tab-reports" class="hide">
@@ -132,12 +132,11 @@ document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
   ['news','posts','reports','codes'].forEach(t => document.getElementById('tab-'+t).classList.toggle('hide', t!==b.dataset.tab));
 });
 
-// ---- News ----
 async function loadNews() {
   const { news } = await (await api('/admin/api/news')).json();
   document.getElementById('newsList').innerHTML = news.map(n => `
     <div class="row" style="justify-content:space-between; border-bottom:1px solid var(--line); padding:8px 0">
-      <div><span class="pill ${n.highlight?'on':''}">${esc(n.badge)}</span> <b>${esc(n.title)}</b> <span class="muted">— ${esc(n.dateText)}</span></div>
+      <div><span class="pill ${n.highlight?'on':''}">${esc(n.badge)}</span> <b>${esc(n.title)}</b> <span class="muted">- ${esc(n.dateText)}</span></div>
       <button class="small danger" onclick="delNews(${n.id})">Delete</button>
     </div>`).join('') || '<span class="muted">Nothing yet.</span>';
 }
@@ -149,7 +148,6 @@ async function postNews() {
 }
 async function delNews(id){ if(confirm('Delete this update?')){ await api('/admin/api/news/'+id,{method:'DELETE'}); loadNews(); toast('Deleted'); } }
 
-// ---- Posts ----
 async function loadPosts() {
   const { posts } = await (await api('/admin/api/posts')).json();
   document.querySelector('#postsTable tbody').innerHTML = posts.map(p => `
@@ -166,7 +164,6 @@ async function loadPosts() {
 async function delPost(id){ if(confirm('Hide this post?')){ await api('/admin/api/posts/'+id,{method:'DELETE'}); loadPosts(); loadReports(); toast('Post hidden'); } }
 async function restorePost(id){ await api('/admin/api/posts/'+id+'/restore',{method:'POST'}); loadPosts(); toast('Restored'); }
 
-// ---- Reports ----
 async function loadReports() {
   const { reports } = await (await api('/admin/api/reports')).json();
   document.getElementById('reportsList').innerHTML = reports.length ? reports.map(r => `
@@ -184,7 +181,6 @@ async function loadReports() {
 }
 async function dismiss(id){ await api('/admin/api/reports/'+id+'/dismiss',{method:'POST'}); loadReports(); toast('Dismissed'); }
 
-// ---- Codes ----
 async function loadCodes() {
   const { codes } = await (await api('/admin/api/codes')).json();
   document.querySelector('#codesTable tbody').innerHTML = codes.map(c => `
@@ -209,7 +205,6 @@ async function revoke(code) {
 
 function v(id){ return document.getElementById(id).value.trim(); }
 
-// Boot: if a stored key still works, go straight in.
 (async () => {
   if (KEY && (await fetch('/admin/api/session', { headers:{ 'X-Owner-Key':KEY } })).ok) showApp();
 })();

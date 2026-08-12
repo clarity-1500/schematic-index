@@ -7,14 +7,6 @@ import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * The catalogue of posts, fetched from the backend.
- *
- * <p>On open (or refresh) it pulls every visible post, page by page, on a worker thread and holds the
- * result. The GUI reads {@link #state()} for the loading/offline chrome and {@link #posts()} for the
- * grid, which then does its own category/search/sort client-side. With no server address configured
- * the state is simply {@link State#OFFLINE}.
- */
 public final class Catalogue {
 	public enum State {
 		LOADING,
@@ -22,7 +14,6 @@ public final class Catalogue {
 		OFFLINE
 	}
 
-	/** Sort order for the grid. Applied client-side over {@link #posts()}. */
 	public enum Sort {
 		NEWEST("Newest"),
 		DOWNLOADS("Most downloaded"),
@@ -59,7 +50,6 @@ public final class Catalogue {
 		return posts;
 	}
 
-	/** Kicks off the first fetch when the library is opened. */
 	public static void ensureLoaded() {
 		if (started) {
 			return;
@@ -96,7 +86,6 @@ public final class Catalogue {
 		List<SchematicEntry> all = new ArrayList<>();
 		String cursor = null;
 
-		// Page through the whole catalogue, capped so a broken server can never loop forever.
 		for (int page = 0; page < 40; page++) {
 			String path = "/index?limit=60" + (cursor == null ? "" : "&cursor=" + Backend.encode(cursor));
 			JsonObject body = Backend.getJson(path);

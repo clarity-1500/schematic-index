@@ -17,13 +17,6 @@ import java.util.Locale;
 import java.util.Properties;
 import java.util.Set;
 
-/**
- * The creators a player follows, and the bridge that turns a new post by one of them into a toast.
- *
- * <p>Persisted next to the mod's other config as a single comma-separated list, so a follow survives
- * a restart. When a real backend lands, the notification path is the same - {@link #notifyForPost}
- * just gets called from wherever new posts arrive instead of from the in-memory catalogue.
- */
 public final class Follows {
 	private static final String FILE_NAME = SchematicIndexMod.MOD_ID + "-follows.properties";
 	private static final String KEY = "following";
@@ -39,7 +32,6 @@ public final class Follows {
 		return FOLLOWING.contains(key(poster));
 	}
 
-	/** Flips the follow state for a poster and returns the new state (true = now following). */
 	public static boolean toggle(String poster) {
 		ensureLoaded();
 		boolean nowFollowing;
@@ -60,7 +52,6 @@ public final class Follows {
 		return FOLLOWING.size();
 	}
 
-	/** Called for every new post. If the player follows its author, a toast is queued. */
 	public static void notifyForPost(SchematicEntry entry) {
 		if (!Settings.notifications() || !isFollowing(entry.poster())) {
 			return;
@@ -119,7 +110,6 @@ public final class Follows {
 		}
 	}
 
-	// Kept so a future caller can enumerate follows (e.g. a Following tab) without exposing the set.
 	public static Set<String> all() {
 		ensureLoaded();
 		return new LinkedHashSet<>(FOLLOWING);

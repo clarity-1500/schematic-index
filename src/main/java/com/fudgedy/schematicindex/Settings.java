@@ -11,15 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
 
-/**
- * User preferences, written next to the mod's other config.
- *
- * <p>By default the download folder is Litematica's own
- * {@link DataManager#getSchematicsBaseDirectory()}, which resolves to the running game directory -
- * for a Modrinth or Prism setup that is whichever profile actually launched, so downloads land in
- * the right profile automatically. A player who would rather download elsewhere can override it, and
- * that override is stored; clearing it falls back to the automatic folder.
- */
 public final class Settings {
 	private static final String FILE_NAME = SchematicIndexMod.MOD_ID + ".properties";
 
@@ -33,25 +24,20 @@ public final class Settings {
 	private static final String KEY_DEVICE_TOKEN = "device_token";
 	private static final String KEY_TERMS = "terms_accepted";
 
-	/**
-	 * The one official catalogue address, baked into the mod. It is deliberately not user-editable -
-	 * there is a single service, and letting players repoint it only invites pointing at the wrong or a
-	 * malicious server. A dev system property overrides it so testers can run against a local backend.
-	 */
 	private static final String OFFICIAL_API = "";
 
 	private static boolean sounds = true;
 	private static boolean confirmOverwrite = true;
-	/** A random per-install id sent with likes and reports - not tied to any account. */
+
 	private static @Nullable String deviceToken;
-	/** Whether the player has agreed to the terms; gates the online features. */
+
 	private static boolean termsAccepted;
-	/** Whether toast cards are shown at all. */
+
 	private static boolean toasts = true;
-	/** Whether a followed creator's new post raises a notification. */
+
 	private static boolean notifications = true;
 	private static @Nullable Path customDownloadDirectory;
-	/** Column offset from the width-based default: -1 = larger cards, +1 = more, smaller cards. */
+
 	private static int gridDensity;
 	private static boolean tutorialSeen;
 	private static boolean loaded;
@@ -77,7 +63,6 @@ public final class Settings {
 		save();
 	}
 
-	/** Column offset from the width-based default (-1 Large, 0 Comfortable, +1 Compact). */
 	public static int gridDensity() {
 		return gridDensity;
 	}
@@ -86,7 +71,6 @@ public final class Settings {
 		return gridDensity < 0 ? "Large" : gridDensity > 0 ? "Compact" : "Comfortable";
 	}
 
-	/** Cycles Comfortable -> Compact -> Large -> Comfortable. */
 	public static void cycleGridDensity() {
 		gridDensity = gridDensity >= 1 ? -1 : gridDensity + 1;
 		save();
@@ -110,7 +94,6 @@ public final class Settings {
 		save();
 	}
 
-	/** A stable random id for this install, created on first use and persisted. */
 	public static String deviceToken() {
 		if (deviceToken == null || deviceToken.isBlank()) {
 			deviceToken = java.util.UUID.randomUUID().toString();
@@ -120,7 +103,6 @@ public final class Settings {
 		return deviceToken;
 	}
 
-	/** The catalogue base URL: the baked-in official address, or a dev system-property override. */
 	public static String apiBaseUrl() {
 		return System.getProperty("schematicindex.index", OFFICIAL_API);
 	}
@@ -138,7 +120,6 @@ public final class Settings {
 		save();
 	}
 
-	/** Withdraw agreement; the terms prompt shows again next time the Index opens. */
 	public static void revokeTerms() {
 		termsAccepted = false;
 		save();
@@ -155,15 +136,10 @@ public final class Settings {
 		}
 	}
 
-	/**
-	 * Where downloads land: the player's override if they set one, otherwise the schematics folder of
-	 * the session that is running right now.
-	 */
 	public static Path downloadDirectory() {
 		return customDownloadDirectory != null ? customDownloadDirectory : defaultDownloadDirectory();
 	}
 
-	/** The automatic location: the running session's Litematica schematics folder. */
 	public static Path defaultDownloadDirectory() {
 		try {
 			return DataManager.getSchematicsBaseDirectory();
@@ -181,7 +157,6 @@ public final class Settings {
 		save();
 	}
 
-	/** Drop the override and go back to following the running session. */
 	public static void clearDownloadDirectory() {
 		customDownloadDirectory = null;
 		save();

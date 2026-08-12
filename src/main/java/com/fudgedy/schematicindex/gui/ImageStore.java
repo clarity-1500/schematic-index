@@ -33,18 +33,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.stream.Stream;
 
-/**
- * Supplies gallery images, from two sources behind one interface.
- *
- * <p>{@link #texture(int)} serves the local screenshots the beta uses; {@link #texture(String)} serves
- * a catalogue reference - an {@code https} URL, fetched once and cached on disk, or a local file path.
- * When the backend lands, posts carry image URLs and the GUI simply asks for those instead; the decode
- * -> scale -> upload pipeline and the eviction/cleanup are shared, so nothing else changes.
- *
- * <p>Everything is keyed by a string so the two sources share one cache. Decoding happens off-thread;
- * the GPU upload runs a couple per frame on the render thread; every texture is released on close so a
- * large gallery cannot leak GPU memory.
- */
 public final class ImageStore {
 	private static final int TARGET_WIDTH = 512;
 	private static final int TARGET_HEIGHT = 288;
@@ -52,7 +40,7 @@ public final class ImageStore {
 	private static final int UPLOADS_PER_FRAME = 2;
 
 	private static final List<Path> FILES = new ArrayList<>();
-	/** Pictures chosen through the upload form live in their own index space so they never shift. */
+
 	private static final int PICKED_BASE = 1_000_000;
 	private static final List<Path> PICKED = new ArrayList<>();
 
@@ -76,9 +64,6 @@ public final class ImageStore {
 	}
 
 	public static void discover() {
-		// Local example images were removed with the move to the backend. Card and gallery images now
-		// come from the catalogue via texture(String url); the local slot path only serves the upload
-		// form's own picks. Kept as a no-op because the screen still calls it on open.
 		scanned = true;
 	}
 
@@ -86,7 +71,6 @@ public final class ImageStore {
 		return FILES.size();
 	}
 
-	/** @return the index of the first registered picture; the rest follow consecutively */
 	public static int register(List<Path> paths) {
 		int start = PICKED_BASE + PICKED.size();
 		PICKED.addAll(paths);
@@ -102,7 +86,6 @@ public final class ImageStore {
 		return FILES.isEmpty() ? null : FILES.get(Math.floorMod(index, FILES.size()));
 	}
 
-	/** Local image by slot (the beta path). Returns null until the upload lands. */
 	public static @Nullable Identifier texture(int index) {
 		int slot = index >= PICKED_BASE ? index : (FILES.isEmpty() ? -1 : Math.floorMod(index, FILES.size()));
 		Path file = fileFor(slot);
@@ -114,10 +97,6 @@ public final class ImageStore {
 		return request("local:" + slot, () -> decodeStream(Files.newInputStream(file)));
 	}
 
-	/**
-	 * Catalogue image by reference: an {@code https} URL (fetched and cached on disk) or a local file
-	 * path. Returns null until the upload lands, so callers fall back to the placeholder.
-	 */
 	public static @Nullable Identifier texture(String ref) {
 		if (ref == null || ref.isBlank()) {
 			return null;
@@ -126,14 +105,12 @@ public final class ImageStore {
 		return request(ref, () -> loadReference(ref));
 	}
 
-	/** Warm the local gallery of a post up front, so flipping through it is instant. */
 	public static void preload(int start, int count) {
 		for (int i = 0; i < count; i++) {
 			texture(start + i);
 		}
 	}
 
-	/** Warm a catalogue gallery up front. */
 	public static void preload(List<String> refs) {
 		for (String ref : refs) {
 			texture(ref);
@@ -158,7 +135,6 @@ public final class ImageStore {
 						REQUESTED.remove(key);
 					}
 				} catch (Exception e) {
-					// Drop it from the requested set so a later frame can retry the fetch.
 					REQUESTED.remove(key);
 					SchematicIndexMod.LOGGER.debug("Could not load image {}", key, e);
 				}
@@ -180,7 +156,6 @@ public final class ImageStore {
 		return decodeStream(new ByteArrayInputStream(bytes));
 	}
 
-	/** Reads and centre-crops an image to the 16:9 target size. Closes the input. */
 	private static NativeImage decodeStream(InputStream input) throws IOException {
 		try (input) {
 			NativeImage source = NativeImage.read(input);
@@ -203,7 +178,6 @@ public final class ImageStore {
 		}
 	}
 
-	/** Downloads over HTTPS, caching the raw bytes on disk so a re-launch does not re-fetch. */
 	private static byte[] fetchCached(String url) throws Exception {
 		Path cache = cacheFile(url);
 
@@ -253,7 +227,6 @@ public final class ImageStore {
 		return FabricLoader.getInstance().getGameDir().resolve(SchematicIndexMod.MOD_ID).resolve("imagecache");
 	}
 
-	/** Must run on the render thread - texture upload touches the GPU. */
 	public static void uploadPending() {
 		Minecraft client = Minecraft.getInstance();
 
@@ -287,7 +260,6 @@ public final class ImageStore {
 		}
 	}
 
-	/** Deletes the on-disk image cache. Best-effort; called from the Clear cache action. */
 	public static void clearDiskCache() {
 		Path directory = cacheDirectory();
 
@@ -300,7 +272,6 @@ public final class ImageStore {
 				try {
 					Files.deleteIfExists(path);
 				} catch (IOException ignored) {
-					// Leave whatever is locked; the cache is disposable.
 				}
 			});
 		} catch (IOException e) {

@@ -31,19 +31,6 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.stream.Stream;
 
-/**
- * Renders a schematic to an orbitable, textured voxel image.
- *
- * <p>Each pixel casts a ray into the voxel grid and samples the block texture where it lands. That
- * is slower per frame than stamping sprites, but it is exact at any camera angle, gives real block
- * textures rather than flat colours, and makes zoom a simple change of camera distance - close
- * enough and the camera passes through the walls, so enclosed builds can be inspected from inside.
- *
- * <p>Everything except the schematic parse and the model lookup runs off the render thread.
- *
- * <p><b>Temporary:</b> files come from the local Litematica schematics folder. The shipped mod will
- * render whatever it downloaded from the catalogue instead.
- */
 public final class SchematicPreview {
 	public static final int WIDTH = 480;
 	public static final int HEIGHT = 270;
@@ -51,13 +38,11 @@ public final class SchematicPreview {
 	public static final float MIN_ZOOM = 0.8F;
 
 	private static final int MAX_VOXELS = 6_000_000;
-	/** Built models are heavy - each holds a full voxel grid - so only a few are kept resident. */
+
 	private static final int MAX_CACHED_MODELS = 5;
 	private static final int BACKGROUND = 0xFF10151A;
 	private static final double FIELD_OF_VIEW = 70.0D;
 
-	// Translucent water: the flat biome tint, an opacity that grows with the ray's path length through
-	// the water, and a cap so even deep water stays faintly see-through.
 	private static final int WATER_R = (BlockTextures.WATER_TINT >> 16) & 0xFF;
 	private static final int WATER_G = (BlockTextures.WATER_TINT >> 8) & 0xFF;
 	private static final int WATER_B = BlockTextures.WATER_TINT & 0xFF;
@@ -65,10 +50,10 @@ public final class SchematicPreview {
 	private static final double WATER_MAX_A = 0.82D;
 
 	private static final List<Path> FILES = new ArrayList<>();
-	/** Files chosen through the upload form live in their own index space so they never shift. */
+
 	private static final int PICKED_BASE = 1_000_000;
 	private static final List<Path> PICKED = new ArrayList<>();
-	/** Catalogue posts: a slot per file URL, downloaded and cached the first time it is rendered. */
+
 	private static final int URL_BASE = 2_000_000;
 	private static final List<String> URLS = new ArrayList<>();
 	private static final List<Path> URL_FILES = new ArrayList<>();
@@ -85,13 +70,6 @@ public final class SchematicPreview {
 	private static @Nullable View queued;
 	private static boolean rendering;
 
-	/**
-	 * Camera state for one frame.
-	 *
-	 * @param cutaway  drop blocks the camera plane cuts, so zooming in reveals interiors
-	 * @param freeLook stand still and turn on the spot instead of orbiting the centre; the eye is
-	 *                 frozen where the orbit camera was when the mode was switched on
-	 */
 	private record View(int slot, float yaw, float pitch, float zoom, boolean cutaway, boolean freeLook,
 			double eyeX, double eyeY, double eyeZ, float maxLayer) {
 	}
@@ -99,7 +77,6 @@ public final class SchematicPreview {
 	private record Frame(View view, @Nullable NativeImage image) {
 	}
 
-	/** Voxel grid of palette indices (0 = empty), plus the framing numbers derived from its size. */
 	private record Model(int[] cells, BlockShapes.Shape[] palette, int sizeX, int sizeY, int sizeZ,
 			double radius, double fitScale) {
 		int at(int x, int y, int z) {
@@ -111,19 +88,13 @@ public final class SchematicPreview {
 		}
 	}
 
-	/** Voxels plus the block states they reference, before textures have been resolved. */
 	private record Draft(int[] cells, List<BlockState> states, int sizeX, int sizeY, int sizeZ) {
 	}
 
 	private SchematicPreview() {
 	}
 
-	// ------------------------------------------------------------------ files
-
 	public static void discover() {
-		// Local example schematics were removed with the move to the backend. The preview now renders
-		// the file a post links to (downloaded from the catalogue); only the upload form registers a
-		// local file, through register(). Kept as a no-op because the screen still calls it on open.
 		scanned = true;
 	}
 
@@ -131,23 +102,17 @@ public final class SchematicPreview {
 		return FILES.size();
 	}
 
-	/** The built model's Y height in blocks (the number of layers), or -1 if it is not loaded yet. */
 	public static int layerHeight(int slot) {
 		Model model = MODELS.get(normalise(slot));
 		return model == null ? -1 : model.sizeY();
 	}
 
-	/**
-	 * Registers a file chosen through the upload form and returns the slot that renders it. Kept in
-	 * its own index space so it can never be confused with the local test schematics.
-	 */
 	public static int register(Path file) {
 		int slot = PICKED_BASE + PICKED.size();
 		PICKED.add(file);
 		return slot;
 	}
 
-	/** Registers a catalogue post's file URL and returns its preview slot (deduped by URL). */
 	public static synchronized int registerUrl(String url) {
 		int existing = URLS.indexOf(url);
 
@@ -174,7 +139,6 @@ public final class SchematicPreview {
 		return FILES.isEmpty() ? null : FILES.get(Math.floorMod(slot, FILES.size()));
 	}
 
-	/** The local file backing a slot, if any. Used to copy it out when a download is requested. */
 	public static @Nullable Path pathFor(int slot) {
 		return fileFor(normalise(slot));
 	}
@@ -205,7 +169,6 @@ public final class SchematicPreview {
 		return file.endsWith(".litematic") ? file.substring(0, file.length() - 10) : file;
 	}
 
-	/** Resolves a slot to a local file, downloading and caching a catalogue URL the first time. */
 	private static @Nullable Path ensureLocal(int slot) {
 		if (slot < URL_BASE) {
 			return fileFor(slot);
@@ -242,20 +205,12 @@ public final class SchematicPreview {
 		}
 	}
 
-	/**
-	 * Zoom 1.0 frames the whole build from outside. Higher values pull the camera in; past roughly 2
-	 * it is inside the bounding box, which is how you get to look inside an enclosed build.
-	 */
 	public static float clampZoom(int slot, float zoom) {
 		Model model = MODELS.get(normalise(slot));
 		float max = model == null ? 12.0F : (float) (Math.min(WIDTH, HEIGHT) / 2.0D / model.fitScale());
 		return Math.max(MIN_ZOOM, Math.min(Math.max(MIN_ZOOM, max), zoom));
 	}
 
-	/**
-	 * Where the orbit camera currently sits. Free look freezes the eye here, so switching modes does
-	 * not teleport the view.
-	 */
 	public static double @Nullable [] eye(int slot, float yaw, float pitch, float zoom, boolean cutaway) {
 		Model model = MODELS.get(normalise(slot));
 		return model == null ? null : eye(model, slot, yaw, pitch, zoom, cutaway);
@@ -268,9 +223,6 @@ public final class SchematicPreview {
 		double dirY = -Math.sin(tilt);
 		double dirZ = Math.cos(radians) * Math.cos(tilt);
 
-		// Must match the distance the renderer actually used, clamp included - otherwise switching to
-		// look-around drops the camera somewhere it never was, which reads as being teleported into
-		// the middle of the build.
 		double distance = model.radius() * 2.0D / Math.max(0.05D, clampZoom(slot, zoom));
 
 		if (!cutaway) {
@@ -284,12 +236,6 @@ public final class SchematicPreview {
 		};
 	}
 
-	// ------------------------------------------------------------------ requests
-
-	/**
-	 * Asks for a camera view. Renders happen one at a time and only the newest request is kept, so
-	 * dragging never builds up a backlog of stale frames.
-	 */
 	public static void request(int slot, float yaw, float pitch, float zoom, boolean cutaway,
 			boolean freeLook, double @Nullable [] eye, float maxLayer) {
 		int index = normalise(slot);
@@ -303,8 +249,6 @@ public final class SchematicPreview {
 			return;
 		}
 
-		// Never fall back to the origin corner: if the caller has no frozen eye yet, work out where
-		// the orbit camera is right now.
 		double[] from = eye != null ? eye
 				: (freeLook ? eye(MODELS.get(index), index, yaw, pitch, zoom, cutaway) : null);
 
@@ -351,20 +295,14 @@ public final class SchematicPreview {
 			return;
 		}
 
-		// A catalogue post's file is fetched and cached first (off-thread); local picks are already on
-		// disk. Then the parse hops to the render thread and the model is built as before.
 		CompletableFuture.supplyAsync(() -> ensureLocal(index)).thenAccept(file -> {
 		if (file == null) {
 			LOADING.remove(index);
 			return;
 		}
 
-		// The parse has to run on the render thread: Litematica reports progress through MaLiLib's
-		// message system, which measures text, which bakes font glyphs into a GPU texture.
 		Minecraft.getInstance().submit(() -> {
 			try {
-				// Not the public (Path, CompoundTag, FileType) constructor - it uses its converter
-				// field before assigning it, so older schematics throw NullPointerException there.
 				return LitematicaSchematic.createFromFile(
 						file.getParent(), file.getFileName().toString(), FileType.LITEMATICA_SCHEMATIC);
 			} catch (Throwable e) {
@@ -377,8 +315,6 @@ public final class SchematicPreview {
 				return null;
 			}
 
-			// Model lookup needs the block model registry, so hop back to the render thread for the
-			// geometry and sprite names, then return to a worker to decode the PNGs.
 			Object[] baked = Minecraft.getInstance().submit(() -> {
 				int count = draft.states().size();
 				BlockTextures.Resolved[] sprites = new BlockTextures.Resolved[count];
@@ -410,11 +346,6 @@ public final class SchematicPreview {
 		});
 	}
 
-	/**
-	 * Keeps the resident model count at the cap. Once it is hit the others are dropped - the one just
-	 * built is always kept, since it is the one about to be shown - and the sprite-pixel cache is
-	 * cleared with them so the memory actually comes back.
-	 */
 	private static void evictModels(int keep) {
 		if (MODELS.size() <= MAX_CACHED_MODELS) {
 			return;
@@ -423,8 +354,6 @@ public final class SchematicPreview {
 		MODELS.keySet().removeIf(key -> key != keep);
 		BlockTextures.clear();
 	}
-
-	// ------------------------------------------------------------------ model building
 
 	private static @Nullable Draft collect(LitematicaSchematic schematic) {
 		Map<String, BlockPos> sizes = schematic.getAreaSizes();
@@ -464,7 +393,6 @@ public final class SchematicPreview {
 		int spanY = maxY - minY + 1;
 		int spanZ = maxZ - minZ + 1;
 
-		// Very large builds get sampled down rather than refused.
 		int step = 1;
 
 		while ((long) (spanX / step) * (spanY / step) * (spanZ / step) > MAX_VOXELS) {
@@ -488,9 +416,6 @@ public final class SchematicPreview {
 				continue;
 			}
 
-			// Litematica always fills a region's container from its minimum corner, whatever sign the
-			// stored size has. Walking outwards from the origin instead mirrors any region with a
-			// negative axis - which is what made some builds render upside down.
 			BlockPos corner = farCorner(origin, region.getValue());
 			int baseX = Math.min(origin.getX(), corner.getX());
 			int baseY = Math.min(origin.getY(), corner.getY());
@@ -532,7 +457,6 @@ public final class SchematicPreview {
 		return new Draft(cells, states, sizeX, sizeY, sizeZ);
 	}
 
-	/** The corner opposite the region position, honouring Litematica's signed sizes. */
 	private static BlockPos farCorner(BlockPos origin, Vec3i size) {
 		return new BlockPos(
 				origin.getX() + size.getX() - (size.getX() < 0 ? -1 : 1),
@@ -555,8 +479,6 @@ public final class SchematicPreview {
 		return new Model(draft.cells(), palette, draft.sizeX(), draft.sizeY(), draft.sizeZ(), radius, fitScale);
 	}
 
-	// ------------------------------------------------------------------ raycasting
-
 	private static NativeImage rasterise(Model model, View view) {
 		NativeImage image = new NativeImage(NativeImage.Format.RGBA, WIDTH, HEIGHT, false);
 
@@ -567,7 +489,6 @@ public final class SchematicPreview {
 		double sinPitch = Math.sin(pitch);
 		double cosPitch = Math.cos(pitch);
 
-		// Camera basis: D is the direction rays travel, R points right on screen, U points up.
 		double dirX = sinYaw * cosPitch;
 		double dirY = -sinPitch;
 		double dirZ = cosYaw * cosPitch;
@@ -578,37 +499,28 @@ public final class SchematicPreview {
 		double upZ = sinPitch * cosYaw;
 
 		double scale = model.fitScale() * view.zoom();
-		// Pick a mip level from how many screen pixels a block spans: fewer pixels per block means each
-		// pixel covers more texels, so a coarser (pre-averaged) level avoids the grain of point-sampling.
+
 		int lod = lodFor(scale);
-		// Zoom doubles as a dolly: the closer the camera gets, the more of the near geometry falls
-		// behind it, until it is inside the build looking out.
+
 		double distance = model.radius() * 2.0D / Math.max(0.05D, view.zoom());
 
 		if (!view.cutaway() && !view.freeLook()) {
-			// With cutaway off the camera never enters the build, so zoom only magnifies and no
-			// geometry is ever clipped or removed.
 			distance = Math.max(distance, model.radius() + 2.0D);
 		}
 		double centreX = model.sizeX() / 2.0D;
 		double centreY = model.sizeY() / 2.0D;
 		double centreZ = model.sizeZ() / 2.0D;
 
-		// One hit record per render, reused for every ray - this loop runs 129,600 times.
 		ShapeTracer.Hit hit = new ShapeTracer.Hit();
 		double planeDistance = view.cutaway() && !view.freeLook()
 				? centreX * dirX + centreY * dirY + centreZ * dirZ - distance
 				: Double.NEGATIVE_INFINITY;
 
-		// The layer slider peels the top off the build: any voxel at or above this height renders as
-		// empty, so the interior can be read without moving the camera. 1.0 means the whole build.
 		int layerCeiling = view.maxLayer() >= 1.0F
 				? model.sizeY()
 				: Math.max(1, Math.round(view.maxLayer() * model.sizeY()));
 
 		if (view.freeLook()) {
-			// Standing still and turning on the spot wants a perspective camera - an orthographic
-			// one just slides a slab of the world past you and reads as the build rotating.
 			double focal = 1.0D / Math.tan(Math.toRadians(FIELD_OF_VIEW) / 2.0D);
 			double halfHeight = HEIGHT / 2.0D;
 
@@ -649,17 +561,9 @@ public final class SchematicPreview {
 		return image;
 	}
 
-	/** Amanatides-Woo grid traversal: step voxel to voxel and shade the first solid one. */
-	/**
-	 * @param planeDistance where the camera plane sits along the view direction; blocks straddling
-	 *                      it are culled whole so zooming in reveals the interior cleanly
-	 */
 	private static int trace(Model model, double originX, double originY, double originZ,
 			double dirX, double dirY, double dirZ, double planeDistance, int layerCeiling, int lod,
 			ShapeTracer.Hit hit) {
-		// Front-to-back alpha compositing for water: the ray keeps a running colour and transmittance,
-		// laying a translucent blue layer over each water voxel it crosses before it lands on something
-		// opaque. accR/G/B are premultiplied (already scaled by the transmittance in front of them).
 		double accR = 0.0D;
 		double accG = 0.0D;
 		double accB = 0.0D;
@@ -725,20 +629,15 @@ public final class SchematicPreview {
 		double nextY = travelled + boundary(pointY, y, dirY, stepY);
 		double nextZ = travelled + boundary(pointZ, z, dirZ, stepZ);
 
-		// The face the ray crossed to enter the grid. Without this the first voxel gets shaded and
-		// UV-mapped as if it had been entered from below, which is why blocks on the outer skin of a
-		// schematic came out with scrambled textures on their exposed side.
 		int face = switch (entryAxis) {
 			case 0 -> dirX > 0 ? Face.WEST : Face.EAST;
 			case 1 -> dirY > 0 ? Face.DOWN : Face.UP;
 			case 2 -> dirZ > 0 ? Face.NORTH : Face.SOUTH;
-			// The camera is already inside the build, so there is no entry face to speak of.
+
 			default -> dirY < 0 ? Face.UP : Face.DOWN;
 		};
 		int guard = (model.sizeX() + model.sizeY() + model.sizeZ()) * 3;
 
-		// The block the camera is standing in never renders: there is no sensible face to shade and
-		// no sensible texture coordinate, which is what produced the smeared mess up close.
 		int insideX = (int) Math.floor(originX);
 		int insideY = (int) Math.floor(originY);
 		int insideZ = (int) Math.floor(originZ);
@@ -750,9 +649,6 @@ public final class SchematicPreview {
 			if (cell != 0) {
 				BlockShapes.Shape shape = model.palette()[cell - 1];
 
-				// Zooming in moves the camera plane through the build. Drop any block the plane
-				// cuts, so blocks vanish whole and reveal the interior instead of being sliced in
-				// half. Only worth testing near the plane.
 				if (travelled < 2.0D && behindCamera(x, y, z, dirX, dirY, dirZ, planeDistance)) {
 					shape = null;
 				}
@@ -762,8 +658,6 @@ public final class SchematicPreview {
 				}
 
 				if (shape != null && shape.waterVolume()) {
-					// A water fluid: add a layer sized by how far the ray travels through this voxel,
-					// then carry on so whatever is behind shows through the tint.
 					double exit = Math.min(nextX, Math.min(nextY, nextZ));
 					double added = addWater(exit - travelled, firstWater);
 					accR += trans * added * WATER_R;
@@ -772,7 +666,6 @@ public final class SchematicPreview {
 					trans *= 1.0D - added;
 					firstWater = false;
 
-					// Once the water is effectively opaque there is no point tracing further.
 					if (trans < 0.02D) {
 						return composite(accR, accG, accB, trans, BACKGROUND);
 					}
@@ -781,8 +674,6 @@ public final class SchematicPreview {
 				}
 
 				if (shape != null) {
-					// Waterlogged geometry sits in water: lay a thinner layer over the voxel (the block
-					// displaces some of it) before shading whatever the ray strikes inside.
 					if (shape.waterlogged()) {
 						double exit = Math.min(nextX, Math.min(nextY, nextZ));
 						double added = addWater((exit - travelled) * 0.6D, firstWater);
@@ -800,8 +691,6 @@ public final class SchematicPreview {
 						return composite(accR, accG, accB, trans, shade(shape.faces(), face, hitX, hitY, hitZ, lod));
 					}
 
-					// Real model geometry: the ray may pass straight through the gaps around a torch or
-					// under a slab, so a miss here just carries on to the next voxel.
 					if (ShapeTracer.trace(shape, originX - x, originY - y, originZ - z, dirX, dirY, dirZ, lod, hit)) {
 						return composite(accR, accG, accB, trans, light(hit.color, hit.face));
 					}
@@ -841,7 +730,6 @@ public final class SchematicPreview {
 		return composite(accR, accG, accB, trans, BACKGROUND);
 	}
 
-	/** Direction ordinals, matching {@code net.minecraft.core.Direction}. */
 	private static final class Face {
 		private static final int DOWN = 0;
 		private static final int UP = 1;
@@ -854,7 +742,6 @@ public final class SchematicPreview {
 		}
 	}
 
-	/** True when any part of the voxel sits behind the camera plane. */
 	private static boolean behindCamera(int x, int y, int z, double dirX, double dirY, double dirZ,
 			double planeDistance) {
 		double cornerX = dirX > 0 ? x : x + 1;
@@ -876,10 +763,6 @@ public final class SchematicPreview {
 		return Math.max(0, Math.min(size - 1, value));
 	}
 
-	/**
-	 * Samples the block's texture where the ray landed, then lights it from a fixed world-space
-	 * direction so a face keeps its brightness as the model spins.
-	 */
 	private static int shade(BlockTextures.Faces faces, int face, double hitX, double hitY, double hitZ, int lod) {
 		double u;
 		double v;
@@ -904,11 +787,6 @@ public final class SchematicPreview {
 
 	private static final double LOG2 = Math.log(2.0D);
 
-	/**
-	 * The mip level for a given on-screen block size. A block spanning {@code pixelsPerBlock} pixels
-	 * covers {@code 16 / pixelsPerBlock} texels of a 16px sprite per pixel; the base-2 log of that is
-	 * how many times to halve the texture so one texel maps to roughly one pixel.
-	 */
 	private static int lodFor(double pixelsPerBlock) {
 		double texelsPerPixel = 16.0D / Math.max(1.0D, pixelsPerBlock);
 
@@ -919,14 +797,13 @@ public final class SchematicPreview {
 		return Math.max(0, Math.min(4, (int) Math.round(Math.log(texelsPerPixel) / LOG2)));
 	}
 
-	/** Vanilla's directional face shading, so shape stays readable without a light source. */
 	private static int light(int color, int face) {
 		double brightness = switch (face) {
 			case Face.UP -> 1.0D;
 			case Face.DOWN -> 0.5D;
 			case Face.NORTH, Face.SOUTH -> 0.8D;
 			case Face.WEST, Face.EAST -> 0.65D;
-			// Geometry with no cube face of its own (crops, torches) reads best unshaded.
+
 			default -> 0.9D;
 		};
 
@@ -936,19 +813,12 @@ public final class SchematicPreview {
 		return 0xFF000000 | (red << 16) | (green << 8) | blue;
 	}
 
-	/**
-	 * Opacity a water segment of the given thickness (in blocks) adds. Linear in thickness - cheaper
-	 * than a real exponential and indistinguishable at these depths. The first segment along a ray is
-	 * lifted a touch so the top of a body of water reads as a distinct surface.
-	 */
 	private static double addWater(double thickness, boolean surface) {
 		double a = Math.min(WATER_MAX_A, Math.max(0.0D, thickness) * WATER_DENSITY);
 		return surface ? Math.min(WATER_MAX_A, a + 0.1D) : a;
 	}
 
-	/** Lays the accumulated (premultiplied) water colour over an opaque or background colour. */
 	private static int composite(double accR, double accG, double accB, double trans, int color) {
-		// The common case: no water was crossed, so the hit colour passes through untouched.
 		if (trans >= 0.999D) {
 			return color;
 		}
@@ -964,9 +834,6 @@ public final class SchematicPreview {
 		return fraction < 0.0D ? fraction + 1.0D : fraction;
 	}
 
-	// ------------------------------------------------------------------ texture plumbing
-
-	/** Must run on the render thread. */
 	public static void uploadPending() {
 		Frame frame = PENDING.poll();
 
@@ -999,7 +866,6 @@ public final class SchematicPreview {
 		startNext();
 	}
 
-	/** @return the current preview texture, or null while the first frame is still being built */
 	public static @Nullable Identifier texture(int slot) {
 		if (shown == null) {
 			return null;
@@ -1008,7 +874,6 @@ public final class SchematicPreview {
 		return shown.slot() == normalise(slot) ? viewId : null;
 	}
 
-	/** Drops the built voxel models and the sprite-pixel cache, so a Clear cache frees their memory. */
 	public static void clearCache() {
 		MODELS.clear();
 		LOADING.clear();

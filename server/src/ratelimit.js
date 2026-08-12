@@ -1,11 +1,5 @@
-// A small fixed-window rate limiter keyed by device token. In-memory, which is fine for a
-// single-instance deployment; if this ever scales out, swap the map for a shared store.
 const buckets = new Map();
 
-/**
- * Middleware that requires an X-Device-Token and caps requests per token per window. Each limiter
- * gets its own `name` so, say, likes and reports are counted separately.
- */
 export function rateLimit({ name, windowMs, max }) {
   return (req, res, next) => {
     const token = (req.get('X-Device-Token') || '').trim();
@@ -36,7 +30,6 @@ export function rateLimit({ name, windowMs, max }) {
   };
 }
 
-// Sweep expired buckets so the map cannot grow without bound.
 setInterval(() => {
   const now = Date.now();
   for (const [key, bucket] of buckets) {

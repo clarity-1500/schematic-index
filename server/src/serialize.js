@@ -4,12 +4,10 @@ import { fileUrl } from './config.js';
 const imagesStmt = db.prepare('SELECT file_key FROM post_images WHERE post_id = ? ORDER BY position');
 const likedStmt = db.prepare('SELECT 1 FROM likes WHERE post_id = ? AND token = ?');
 
-/** Whether a device token has liked a post. */
 export function isLiked(postId, token) {
   return token ? !!likedStmt.get(postId, token) : false;
 }
 
-/** Turns a posts row into the JSON the mod consumes. Shapes match docs/backend-contract.md. */
 export function serializePost(row, token) {
   const imageUrls = imagesStmt.all(row.id).map((i) => fileUrl(i.file_key)).filter(Boolean);
 
@@ -35,7 +33,6 @@ export function serializePost(row, token) {
   };
 }
 
-/** Turns a news row into the JSON the mod's News tab consumes. Body paragraphs split on blank lines. */
 export function serializeNews(row) {
   return {
     badge: row.badge,

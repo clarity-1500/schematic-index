@@ -1,8 +1,5 @@
 package com.fudgedy.schematicindex.catalogue;
 
-/**
- * Fixed category list. Uploaders tag a post with exactly one of these.
- */
 public enum Category {
 	ALL("All"),
 	FARMS("Farms"),
@@ -23,7 +20,6 @@ public enum Category {
 		return this.label;
 	}
 
-	/** Maps a server category code (e.g. "FARMS") to the enum, falling back to {@link #ALL}. */
 	public static Category fromName(String name) {
 		if (name != null) {
 			for (Category value : values()) {
@@ -36,7 +32,6 @@ public enum Category {
 		return ALL;
 	}
 
-	/** Everything except {@link #ALL}, which is the filter-off state rather than a real tag. */
 	public static Category[] tags() {
 		Category[] all = values();
 		Category[] tags = new Category[all.length - 1];

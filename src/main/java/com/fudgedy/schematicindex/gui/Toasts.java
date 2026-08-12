@@ -11,22 +11,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * Bottom-left notification toasts, in the style Essential uses: a small rounded card that slides in
- * from the left edge, holds, then slides back out, with a thin timer bar depleting along the bottom.
- *
- * <p>Rendered in two places so a notification reaches the player wherever they are - over the
- * in-game HUD through {@code GuiHudMixin}, and over the Index screen from its own render. Only one of
- * those runs on any given frame (a screen hides the HUD), so there is no double draw.
- *
- * <p>Pushes come from the render thread today; the list is copy-on-write so a HUD frame reading it
- * while a push lands can never throw.
- */
 public final class Toasts {
 	private static final int MARGIN = 8;
 	private static final int WIDTH = 190;
 	private static final int GAP = 6;
-	/** Width of the brand-colour bar down the left edge. */
+
 	private static final int BAR = 4;
 	private static final long LIFETIME = 5200L;
 	private static final long SLIDE = 260L;
@@ -40,7 +29,6 @@ public final class Toasts {
 	private Toasts() {
 	}
 
-	/** Queue a toast. {@code icon} may be null for a text-only card. No-op when toasts are turned off. */
 	public static void push(String title, String message, @Nullable ItemStack icon) {
 		if (!Settings.toasts()) {
 			return;
@@ -48,7 +36,6 @@ public final class Toasts {
 
 		ACTIVE.add(new Toast(title, message, System.currentTimeMillis(), icon));
 
-		// A hard backstop against a runaway burst; the visible cap is separate and lower.
 		while (ACTIVE.size() > 16) {
 			ACTIVE.remove(0);
 		}
@@ -98,7 +85,6 @@ public final class Toasts {
 		Theme.roundedRect(ctx, x, y, WIDTH, height, Theme.RADIUS_CARD, 0xF01A1E23);
 		Theme.roundedOutline(ctx, x, y, WIDTH, height, Theme.RADIUS_CARD, Theme.HAIRLINE);
 
-		// Brand-colour bar down the full left edge, then the item icon if there is one.
 		ctx.fill(x + 1, y + 1, x + 1 + BAR, y + height - 1, Theme.ACCENT);
 
 		if (toast.icon() != null) {
@@ -116,14 +102,12 @@ public final class Toasts {
 			ly += font.lineHeight + 1;
 		}
 
-		// Timer bar: depletes left to right over the toast's life, starting past the brand bar.
 		float remaining = Math.max(0.0F, 1.0F - age / (float) LIFETIME);
 		int trackLeft = x + BAR + 4;
 		int barWidth = Math.round((x + WIDTH - 4 - trackLeft) * remaining);
 		ctx.fill(trackLeft, y + height - 3, trackLeft + barWidth, y + height - 2, Theme.ACCENT_BRIGHT);
 	}
 
-	/** Slide in from off the left edge, hold, then slide back out. */
 	private static int slideX(long age) {
 		int hidden = -(WIDTH + MARGIN + 4);
 
@@ -153,7 +137,6 @@ public final class Toasts {
 				current = new StringBuilder(word);
 
 				if (lines.size() == maxLines) {
-					// Mark that there was more than fits, so a clipped message does not look complete.
 					String last = lines.get(maxLines - 1);
 					lines.set(maxLines - 1, Theme.clip(font, last + "...", width));
 					return lines;

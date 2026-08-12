@@ -12,13 +12,6 @@ import java.util.LinkedHashSet;
 import java.util.Properties;
 import java.util.Set;
 
-/**
- * The posts a player has liked or saved, persisted so both survive a restart.
- *
- * <p>Stored next to the mod's other config as two comma-separated id lists. Likes are local for now -
- * when a backend lands they become server-authoritative and this cache seeds the "did I like it"
- * state; saves stay a purely local list of what the player chose to keep.
- */
 public final class Bookmarks {
 	private static final String FILE_NAME = SchematicIndexMod.MOD_ID + "-library.properties";
 	private static final String KEY_LIKED = "liked";
@@ -36,7 +29,6 @@ public final class Bookmarks {
 		return LIKED.contains(id);
 	}
 
-	/** Flips the like state for a post and returns the new state (true = now liked). */
 	public static boolean toggleLike(String id) {
 		ensureLoaded();
 		boolean nowLiked = !LIKED.remove(id);
@@ -54,7 +46,6 @@ public final class Bookmarks {
 		return SAVED.contains(id);
 	}
 
-	/** Flips the saved state for a post and returns the new state (true = now saved). */
 	public static boolean toggleSaved(String id) {
 		ensureLoaded();
 		boolean nowSaved = !SAVED.remove(id);

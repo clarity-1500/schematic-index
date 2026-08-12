@@ -2,18 +2,13 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import { paths } from './config.js';
 
-// Make sure the data directories exist before opening the database.
 fs.mkdirSync(paths.images, { recursive: true });
 fs.mkdirSync(paths.schematics, { recursive: true });
 
-// Node's built-in SQLite (Node 22+). No native module to compile, and it works the same on the
-// Linux PaaS. The API is synchronous: db.prepare(sql).get()/.all()/.run().
 export const db = new DatabaseSync(paths.db);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 
-// The full data model. Mirrors docs/backend-contract.md so the read/write endpoints in later
-// sections map straight onto these tables. File contents live on disk; only their keys are stored.
 db.exec(`
   CREATE TABLE IF NOT EXISTS posts (
     id               TEXT PRIMARY KEY,

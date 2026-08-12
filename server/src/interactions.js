@@ -2,7 +2,6 @@ import { db } from './db.js';
 import { rateLimit } from './ratelimit.js';
 import { reportToDiscord } from './discord.js';
 
-// Report reasons the mod can send. Kept in lockstep with the mod's report picker.
 const REASONS = new Set(['NSFW', 'STOLEN', 'SPAM', 'OTHER']);
 
 const visiblePost = db.prepare("SELECT * FROM posts WHERE id = ? AND visibility = 'visible'");
@@ -59,7 +58,6 @@ export function registerInteractionRoutes(app) {
     res.json({ likes: likeCount.get(id).likes, liked: false });
   });
 
-  // Records a counted download. The file itself is fetched from fileUrl directly; this only tallies.
   app.post('/download', downloadLimit, (req, res) => {
     const id = postId(req);
 
@@ -91,7 +89,6 @@ export function registerInteractionRoutes(app) {
       return res.status(404).json({ error: 'not_found', message: 'No such post.' });
     }
 
-    // One report per (post, token). Re-reporting is a silent no-op.
     if (!existingReport.get(id, req.deviceToken)) {
       addReport.run(id, reason, note, req.deviceToken, Date.now());
       bumpReports.run(id);

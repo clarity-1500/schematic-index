@@ -7,7 +7,6 @@ const CATEGORIES = new Set([
   'FARMS', 'CONTRAPTIONS', 'REGEARS', 'STASHES', 'GAMBLING_BASES', 'HANGOUT_BASES', 'MEGA_BUILDS',
 ]);
 
-// id is the tie-breaker so paging is stable within a sort.
 const SORTS = {
   newest: 'posted_at DESC, id DESC',
   downloads: 'downloads DESC, id DESC',
@@ -29,10 +28,8 @@ function encodeCursor(offset) {
 }
 
 export function registerReadRoutes(app) {
-  // Uploaded images and schematics. Content is immutable once stored, so cache hard.
   app.use('/files', express.static(paths.files, { maxAge: '7d', immutable: true }));
 
-  // Paginated catalogue. Filters by category/search, sorts, and cursors by offset.
   app.get('/index', (req, res) => {
     const token = req.get('X-Device-Token') || '';
     const category = String(req.query.category || '').toUpperCase();

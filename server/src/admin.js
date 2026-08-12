@@ -6,7 +6,6 @@ import { config } from './config.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
-/** Owner-only guard: a constant-time check of the X-Owner-Key header against OWNER_KEY. */
 function requireOwner(req, res, next) {
   if (!config.ownerKey) {
     return res.status(503).json({ error: 'no_owner_key', message: 'Server has no OWNER_KEY set.' });
@@ -25,13 +24,10 @@ function requireOwner(req, res, next) {
 export function registerAdminRoutes(app) {
   const owner = requireOwner;
 
-  // The admin single-page app. Auth happens per API call via the owner key, so the shell is public.
   app.get('/admin', (req, res) => res.sendFile(path.join(publicDir, 'admin.html')));
 
-  // Lets the admin site verify the key on login.
   app.get('/admin/api/session', owner, (req, res) => res.json({ ok: true }));
 
-  // ---- Posts ------------------------------------------------------------
   app.get('/admin/api/posts', owner, (req, res) => {
     const rows = db.prepare('SELECT * FROM posts ORDER BY posted_at DESC LIMIT 500').all();
     res.json({
@@ -53,7 +49,6 @@ export function registerAdminRoutes(app) {
     res.json({ ok: true });
   });
 
-  // ---- News -------------------------------------------------------------
   app.get('/admin/api/news', owner, (req, res) => {
     const rows = db.prepare('SELECT * FROM news ORDER BY posted_at DESC').all();
     res.json({
@@ -75,7 +70,6 @@ export function registerAdminRoutes(app) {
       return res.status(400).json({ error: 'missing_fields', message: 'badge, title and body are required.' });
     }
 
-    // Only the newest entry should carry the accent badge.
     if (highlight) {
       db.prepare('UPDATE news SET highlight = 0').run();
     }
@@ -92,7 +86,6 @@ export function registerAdminRoutes(app) {
     res.json({ ok: true });
   });
 
-  // ---- Reports ----------------------------------------------------------
   app.get('/admin/api/reports', owner, (req, res) => {
     const rows = db.prepare(`
       SELECT r.*, p.title AS post_title, p.poster AS post_poster, p.uploader_code_id AS code_id
@@ -112,7 +105,6 @@ export function registerAdminRoutes(app) {
     res.json({ ok: true });
   });
 
-  // ---- Upload codes -----------------------------------------------------
   app.get('/admin/api/codes', owner, (req, res) => {
     const rows = db.prepare('SELECT * FROM codes ORDER BY created_at DESC').all();
     res.json({
