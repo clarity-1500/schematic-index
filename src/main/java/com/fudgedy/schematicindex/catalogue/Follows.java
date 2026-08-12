@@ -1,6 +1,7 @@
 package com.fudgedy.schematicindex.catalogue;
 
 import com.fudgedy.schematicindex.SchematicIndexMod;
+import com.fudgedy.schematicindex.Settings;
 import com.fudgedy.schematicindex.gui.Toasts;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.world.item.ItemStack;
@@ -61,7 +62,7 @@ public final class Follows {
 
 	/** Called for every new post. If the player follows its author, a toast is queued. */
 	public static void notifyForPost(SchematicEntry entry) {
-		if (!isFollowing(entry.poster())) {
+		if (!Settings.notifications() || !isFollowing(entry.poster())) {
 			return;
 		}
 

@@ -1,5 +1,6 @@
 package com.fudgedy.schematicindex.gui;
 
+import com.fudgedy.schematicindex.Settings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -23,8 +24,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
  */
 public final class Toasts {
 	private static final int MARGIN = 8;
-	private static final int WIDTH = 176;
+	private static final int WIDTH = 190;
 	private static final int GAP = 6;
+	/** Width of the brand-colour bar down the left edge. */
+	private static final int BAR = 4;
 	private static final long LIFETIME = 5200L;
 	private static final long SLIDE = 260L;
 	private static final int MAX_VISIBLE = 4;
@@ -37,8 +40,12 @@ public final class Toasts {
 	private Toasts() {
 	}
 
-	/** Queue a toast. {@code icon} may be null for a text-only card. */
+	/** Queue a toast. {@code icon} may be null for a text-only card. No-op when toasts are turned off. */
 	public static void push(String title, String message, @Nullable ItemStack icon) {
+		if (!Settings.toasts()) {
+			return;
+		}
+
 		ACTIVE.add(new Toast(title, message, System.currentTimeMillis(), icon));
 
 		// A hard backstop against a runaway burst; the visible cap is separate and lower.
@@ -74,9 +81,9 @@ public final class Toasts {
 				break;
 			}
 
-			int textLeft = toast.icon() != null ? 28 : 10;
+			int textLeft = toast.icon() != null ? 32 : 14;
 			List<String> lines = wrap(font, toast.message(), WIDTH - textLeft - 10, 2);
-			int cardHeight = 8 + font.lineHeight + 3 + Math.max(1, lines.size()) * (font.lineHeight + 1) + 6;
+			int cardHeight = 11 + font.lineHeight + 4 + Math.max(1, lines.size()) * (font.lineHeight + 1) + 9;
 
 			baseY -= cardHeight;
 			draw(ctx, font, toast, slideX(now - toast.spawnedAt()), baseY, cardHeight, textLeft, lines,
@@ -91,28 +98,29 @@ public final class Toasts {
 		Theme.roundedRect(ctx, x, y, WIDTH, height, Theme.RADIUS_CARD, 0xF01A1E23);
 		Theme.roundedOutline(ctx, x, y, WIDTH, height, Theme.RADIUS_CARD, Theme.HAIRLINE);
 
-		// Left accent stripe, then the item icon if there is one.
-		ctx.fill(x + 2, y + 4, x + 4, y + height - 4, Theme.ACCENT);
+		// Brand-colour bar down the full left edge, then the item icon if there is one.
+		ctx.fill(x + 1, y + 1, x + 1 + BAR, y + height - 1, Theme.ACCENT);
 
 		if (toast.icon() != null) {
-			ctx.renderItem(toast.icon(), x + 8, y + (height - 16) / 2);
+			ctx.renderItem(toast.icon(), x + BAR + 6, y + (height - 16) / 2);
 		}
 
 		int tx = x + textLeft;
 		Theme.text(ctx, font, Theme.bold(Theme.clipBold(font, toast.title(), WIDTH - textLeft - 8)),
-				tx, y + 6, Theme.TEXT);
+				tx, y + 8, Theme.TEXT);
 
-		int ly = y + 6 + font.lineHeight + 2;
+		int ly = y + 8 + font.lineHeight + 3;
 
 		for (String line : lines) {
 			Theme.text(ctx, font, line, tx, ly, Theme.TEXT_MUTE);
 			ly += font.lineHeight + 1;
 		}
 
-		// Timer bar: depletes left to right over the toast's life.
+		// Timer bar: depletes left to right over the toast's life, starting past the brand bar.
 		float remaining = Math.max(0.0F, 1.0F - age / (float) LIFETIME);
-		int barWidth = Math.round((WIDTH - 8) * remaining);
-		ctx.fill(x + 4, y + height - 3, x + 4 + barWidth, y + height - 2, Theme.ACCENT_BRIGHT);
+		int trackLeft = x + BAR + 4;
+		int barWidth = Math.round((x + WIDTH - 4 - trackLeft) * remaining);
+		ctx.fill(trackLeft, y + height - 3, trackLeft + barWidth, y + height - 2, Theme.ACCENT_BRIGHT);
 	}
 
 	/** Slide in from off the left edge, hold, then slide back out. */

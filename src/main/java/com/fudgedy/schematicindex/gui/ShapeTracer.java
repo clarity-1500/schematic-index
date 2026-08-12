@@ -29,7 +29,7 @@ public final class ShapeTracer {
 	 * @return true when a textured surface was hit, with the result written into {@code hit}
 	 */
 	public static boolean trace(BlockShapes.Shape shape, double originX, double originY, double originZ,
-			double dirX, double dirY, double dirZ, Hit hit) {
+			double dirX, double dirY, double dirZ, int lod, Hit hit) {
 		BlockShapes.Quad[] quads = shape.quads;
 
 		if (quads == null) {
@@ -94,8 +94,8 @@ public final class ShapeTracer {
 				double texV = quad.vs[0] + u * (quad.vs[b] - quad.vs[0]) + v * (quad.vs[c] - quad.vs[0]);
 
 				int color = quad.texture != null
-						? quad.texture.sample(wrap(texU), wrap(texV))
-						: shape.faces.sample(Math.max(quad.face, 0), wrap(texU), wrap(texV));
+						? quad.texture.sample(wrap(texU), wrap(texV), lod)
+						: shape.faces.sample(Math.max(quad.face, 0), wrap(texU), wrap(texV), lod);
 
 				// Transparent texel: the ray carries on through, which is what makes ladders and
 				// crops read correctly instead of as solid panes.

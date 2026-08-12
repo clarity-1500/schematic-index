@@ -1,5 +1,7 @@
 package com.fudgedy.schematicindex.catalogue;
 
+import java.util.List;
+
 /**
  * One catalogue post. Mirrors what the index JSON will eventually carry, so swapping the mock
  * catalogue for a real backend does not change the GUI.
@@ -13,6 +15,12 @@ package com.fudgedy.schematicindex.catalogue;
  * @param imageStart index of the first gallery image in the image source
  * @param schematicSlot which schematic the 3D preview renders - separate from the images, so an
  *                      uploaded post previews its own file rather than a stand-in
+ * @param thumbnailUrl  the card image URL from the catalogue (null in the local beta)
+ * @param imageUrls     the gallery image URLs from the catalogue (empty in the local beta)
+ * @param fileUrl       the schematic download URL from the catalogue (null in the local beta)
+ * @param fileHash      integrity/cache hash of the file (null in the local beta)
+ * @param fileSize      the file size in bytes, or 0 if unknown
+ * @param liked         whether the server says this device liked the post
  */
 public record SchematicEntry(
 		String id,
@@ -32,8 +40,27 @@ public record SchematicEntry(
 		int imageCount,
 		int imageStart,
 		int schematicSlot,
-		boolean downloaded
+		boolean downloaded,
+		String thumbnailUrl,
+		List<String> imageUrls,
+		String fileUrl,
+		String fileHash,
+		long fileSize,
+		boolean liked
 ) {
+	/**
+	 * A local/beta post with no catalogue URLs - keeps the original argument shape at call sites so the
+	 * mock and upload form do not each have to spell out the server-only fields.
+	 */
+	public static SchematicEntry local(String id, String title, String thumbnailName, String poster,
+			String designer, Category category, int sizeX, int sizeY, int sizeZ, int blockCount, int downloads,
+			int likes, long postedAt, String description, int imageCount, int imageStart, int schematicSlot,
+			boolean downloaded) {
+		return new SchematicEntry(id, title, thumbnailName, poster, designer, category, sizeX, sizeY, sizeZ,
+				blockCount, downloads, likes, postedAt, description, imageCount, imageStart, schematicSlot,
+				downloaded, null, List.of(), null, null, 0L, false);
+	}
+
 	/** What the card shows: the short thumbnail name, falling back to the full title. */
 	public String cardName() {
 		return this.thumbnailName == null || this.thumbnailName.isBlank() ? this.title : this.thumbnailName;
@@ -61,6 +88,11 @@ public record SchematicEntry(
 
 	public String blockCountLabel() {
 		return compact(this.blockCount);
+	}
+
+	/** The bounding-box volume in blocks: width x height x length. */
+	public String volumeLabel() {
+		return compact(this.sizeX * this.sizeY * this.sizeZ);
 	}
 
 	public String downloadsLabel() {

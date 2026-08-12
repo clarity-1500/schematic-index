@@ -16,6 +16,7 @@ import net.minecraft.world.level.material.MapColor;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -51,26 +52,77 @@ public final class BlockTextures {
 			}
 		}
 
-		public int sample(int face, double u, double v) {
+		public int sample(int face, double u, double v, int lod) {
 			Texture texture = this.byFace[face];
 
 			if (texture == null) {
 				return this.averageColor;
 			}
 
-			int color = texture.sample(u, v);
+			int color = texture.sample(u, v, lod);
 			// Cutout textures (glass, leaves, rails) leave holes; show the block's tone instead of
 			// punching a transparent gap through the middle of a solid-looking build.
 			return (color >>> 24) < 16 ? this.averageColor : tint(color, this.tints[face]);
 		}
 	}
 
-	record Texture(int[] pixels, int width, int height) {
-		int sample(double u, double v) {
-			int x = Math.max(0, Math.min(this.width - 1, (int) (u * this.width)));
-			int y = Math.max(0, Math.min(this.height - 1, (int) (v * this.height)));
-			return this.pixels[y * this.width + x];
+	/**
+	 * A sprite plus a mip chain of 2x2-averaged smaller copies. Sampling a distant block - one that
+	 * covers only a few screen pixels - from a coarse level averages the texels a pixel spans, which is
+	 * what stops a noisy texture like stone breaking up into salt-and-pepper grain at a distance.
+	 */
+	record Texture(int[][] mips, int width, int height) {
+		int sample(double u, double v, int lod) {
+			int level = Math.max(0, Math.min(this.mips.length - 1, lod));
+			int w = Math.max(1, this.width >> level);
+			int h = Math.max(1, this.height >> level);
+			int x = Math.max(0, Math.min(w - 1, (int) (u * w)));
+			int y = Math.max(0, Math.min(h - 1, (int) (v * h)));
+			return this.mips[level][y * w + x];
 		}
+	}
+
+	/** Builds the mip chain: each level is the previous one box-filtered to half size, down to 1x1. */
+	private static int[][] buildMips(int[] base, int width, int height) {
+		List<int[]> levels = new ArrayList<>();
+		levels.add(base);
+
+		int cw = width;
+		int ch = height;
+		int[] current = base;
+
+		while (cw > 1 || ch > 1) {
+			int nw = Math.max(1, cw >> 1);
+			int nh = Math.max(1, ch >> 1);
+			int[] next = new int[nw * nh];
+
+			for (int y = 0; y < nh; y++) {
+				for (int x = 0; x < nw; x++) {
+					int x0 = Math.min(cw - 1, x * 2);
+					int x1 = Math.min(cw - 1, x * 2 + 1);
+					int y0 = Math.min(ch - 1, y * 2);
+					int y1 = Math.min(ch - 1, y * 2 + 1);
+					next[y * nw + x] = average(current[y0 * cw + x0], current[y0 * cw + x1],
+							current[y1 * cw + x0], current[y1 * cw + x1]);
+				}
+			}
+
+			levels.add(next);
+			current = next;
+			cw = nw;
+			ch = nh;
+		}
+
+		return levels.toArray(new int[0][]);
+	}
+
+	/** Averages four packed colours lane by lane, so it is independent of channel order. */
+	private static int average(int a, int b, int c, int d) {
+		int c24 = ((a >>> 24) + (b >>> 24) + (c >>> 24) + (d >>> 24)) / 4;
+		int c16 = (((a >> 16) & 0xFF) + ((b >> 16) & 0xFF) + ((c >> 16) & 0xFF) + ((d >> 16) & 0xFF)) / 4;
+		int c8 = (((a >> 8) & 0xFF) + ((b >> 8) & 0xFF) + ((c >> 8) & 0xFF) + ((d >> 8) & 0xFF)) / 4;
+		int c0 = ((a & 0xFF) + (b & 0xFF) + (c & 0xFF) + (d & 0xFF)) / 4;
+		return (c24 << 24) | (c16 << 16) | (c8 << 8) | c0;
 	}
 
 	private static final Map<Identifier, Texture> CACHE = new HashMap<>();
@@ -239,7 +291,7 @@ public final class BlockTextures {
 			}
 
 			image.close();
-			return new Texture(pixels, width, frameHeight);
+			return new Texture(buildMips(pixels, width, frameHeight), width, frameHeight);
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.debug("Could not read texture {}", file, e);
 			return null;

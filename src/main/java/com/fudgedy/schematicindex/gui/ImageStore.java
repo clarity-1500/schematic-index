@@ -2,38 +2,48 @@ package com.fudgedy.schematicindex.gui;
 
 import com.fudgedy.schematicindex.SchematicIndexMod;
 import com.mojang.blaze3d.platform.NativeImage;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.Identifier;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.stream.Stream;
 
 /**
- * Supplies gallery images.
+ * Supplies gallery images, from two sources behind one interface.
  *
- * <p><b>Temporary:</b> images are read from the local Minecraft screenshots folder so the grid can be
- * tested with real pictures. The shipped mod will fetch these from the catalogue instead - the rest of
- * the GUI only ever asks for "image number N", so swapping the source does not touch the layout code.
+ * <p>{@link #texture(int)} serves the local screenshots the beta uses; {@link #texture(String)} serves
+ * a catalogue reference - an {@code https} URL, fetched once and cached on disk, or a local file path.
+ * When the backend lands, posts carry image URLs and the GUI simply asks for those instead; the decode
+ * -> scale -> upload pipeline and the eviction/cleanup are shared, so nothing else changes.
  *
- * <p>This is also a dry run of the real pipeline: decode off-thread, scale to the planned 512x288
- * asset size, upload to the GPU on the render thread a couple per frame, and release every texture on
- * close so scrolling a large grid cannot leak GPU memory.
+ * <p>Everything is keyed by a string so the two sources share one cache. Decoding happens off-thread;
+ * the GPU upload runs a couple per frame on the render thread; every texture is released on close so a
+ * large gallery cannot leak GPU memory.
  */
 public final class ImageStore {
 	private static final int TARGET_WIDTH = 512;
@@ -45,60 +55,31 @@ public final class ImageStore {
 	/** Pictures chosen through the upload form live in their own index space so they never shift. */
 	private static final int PICKED_BASE = 1_000_000;
 	private static final List<Path> PICKED = new ArrayList<>();
-	private static final Map<Integer, Identifier> READY = new HashMap<>();
-	private static final Set<Integer> REQUESTED = new HashSet<>();
+
+	private static final Map<String, Identifier> READY = new HashMap<>();
+	private static final Set<String> REQUESTED = ConcurrentHashMap.newKeySet();
 	private static final Queue<Decoded> PENDING = new ConcurrentLinkedQueue<>();
+	private static int uploadCounter;
 
 	private static boolean scanned;
 
-	private record Decoded(int index, NativeImage image) {
+	private record Decoded(String key, NativeImage image) {
+	}
+
+	@FunctionalInterface
+	private interface ImageLoader {
+		@Nullable
+		NativeImage load() throws Exception;
 	}
 
 	private ImageStore() {
 	}
 
 	public static void discover() {
-		if (scanned) {
-			return;
-		}
-
+		// Local example images were removed with the move to the backend. Card and gallery images now
+		// come from the catalogue via texture(String url); the local slot path only serves the upload
+		// form's own picks. Kept as a no-op because the screen still calls it on open.
 		scanned = true;
-		Path directory = testImageDirectory();
-
-		if (directory == null || !Files.isDirectory(directory)) {
-			SchematicIndexMod.LOGGER.info("No test image folder at {} - cards will use the blueprint placeholder", directory);
-			return;
-		}
-
-		try (Stream<Path> stream = Files.list(directory)) {
-			stream.filter(path -> {
-						String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
-						return name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg");
-					})
-					.sorted(Comparator.comparing(path -> path.getFileName().toString()))
-					.limit(MAX_IMAGES)
-					.forEach(FILES::add);
-		} catch (IOException e) {
-			SchematicIndexMod.LOGGER.warn("Could not list test images in {}", directory, e);
-		}
-
-		SchematicIndexMod.LOGGER.info("Loaded {} test images from {}", FILES.size(), directory);
-	}
-
-	private static @Nullable Path testImageDirectory() {
-		String override = System.getProperty("schematicindex.testimages");
-
-		if (override != null && !override.isBlank()) {
-			return Path.of(override);
-		}
-
-		String appData = System.getenv("APPDATA");
-
-		if (appData == null || appData.isBlank()) {
-			return null;
-		}
-
-		return Path.of(appData, "ModrinthApp", "profiles", "Fabulously Optimized", "screenshots");
 	}
 
 	public static int count() {
@@ -121,42 +102,90 @@ public final class ImageStore {
 		return FILES.isEmpty() ? null : FILES.get(Math.floorMod(index, FILES.size()));
 	}
 
-	/**
-	 * Returns the texture for an image slot, kicking off a background decode the first time it is
-	 * asked for. Returns null until the upload lands, so callers should fall back to the placeholder.
-	 */
+	/** Local image by slot (the beta path). Returns null until the upload lands. */
 	public static @Nullable Identifier texture(int index) {
 		int slot = index >= PICKED_BASE ? index : (FILES.isEmpty() ? -1 : Math.floorMod(index, FILES.size()));
+		Path file = fileFor(slot);
 
-		if (slot < 0 || fileFor(slot) == null) {
+		if (slot < 0 || file == null) {
 			return null;
 		}
 
-		Identifier ready = READY.get(slot);
+		return request("local:" + slot, () -> decodeStream(Files.newInputStream(file)));
+	}
+
+	/**
+	 * Catalogue image by reference: an {@code https} URL (fetched and cached on disk) or a local file
+	 * path. Returns null until the upload lands, so callers fall back to the placeholder.
+	 */
+	public static @Nullable Identifier texture(String ref) {
+		if (ref == null || ref.isBlank()) {
+			return null;
+		}
+
+		return request(ref, () -> loadReference(ref));
+	}
+
+	/** Warm the local gallery of a post up front, so flipping through it is instant. */
+	public static void preload(int start, int count) {
+		for (int i = 0; i < count; i++) {
+			texture(start + i);
+		}
+	}
+
+	/** Warm a catalogue gallery up front. */
+	public static void preload(List<String> refs) {
+		for (String ref : refs) {
+			texture(ref);
+		}
+	}
+
+	private static @Nullable Identifier request(String key, ImageLoader loader) {
+		Identifier ready = READY.get(key);
 
 		if (ready != null) {
 			return ready;
 		}
 
-		if (REQUESTED.add(slot)) {
-			CompletableFuture.runAsync(() -> decode(slot));
+		if (REQUESTED.add(key)) {
+			CompletableFuture.runAsync(() -> {
+				try {
+					NativeImage image = loader.load();
+
+					if (image != null) {
+						PENDING.add(new Decoded(key, image));
+					} else {
+						REQUESTED.remove(key);
+					}
+				} catch (Exception e) {
+					// Drop it from the requested set so a later frame can retry the fetch.
+					REQUESTED.remove(key);
+					SchematicIndexMod.LOGGER.debug("Could not load image {}", key, e);
+				}
+			});
 		}
 
 		return null;
 	}
 
-	private static void decode(int slot) {
-		Path file = fileFor(slot);
+	private static @Nullable NativeImage loadReference(String ref) throws Exception {
+		byte[] bytes;
 
-		if (file == null) {
-			return;
+		if (ref.startsWith("http://") || ref.startsWith("https://")) {
+			bytes = fetchCached(ref);
+		} else {
+			bytes = Files.readAllBytes(Path.of(ref));
 		}
 
-		try (InputStream input = Files.newInputStream(file)) {
+		return decodeStream(new ByteArrayInputStream(bytes));
+	}
+
+	/** Reads and centre-crops an image to the 16:9 target size. Closes the input. */
+	private static NativeImage decodeStream(InputStream input) throws IOException {
+		try (input) {
 			NativeImage source = NativeImage.read(input);
 			NativeImage target = new NativeImage(source.format(), TARGET_WIDTH, TARGET_HEIGHT, false);
 
-			// Centre-crop to 16:9 before scaling, so nothing is squashed.
 			int cropWidth = source.getWidth();
 			int cropHeight = Math.round(cropWidth * 9.0F / 16.0F);
 
@@ -170,10 +199,58 @@ public final class ImageStore {
 
 			source.resizeSubRectTo(cropX, cropY, cropWidth, cropHeight, target);
 			source.close();
-			PENDING.add(new Decoded(slot, target));
-		} catch (Exception e) {
-			SchematicIndexMod.LOGGER.warn("Could not decode test image {}", file, e);
+			return target;
 		}
+	}
+
+	/** Downloads over HTTPS, caching the raw bytes on disk so a re-launch does not re-fetch. */
+	private static byte[] fetchCached(String url) throws Exception {
+		Path cache = cacheFile(url);
+
+		if (cache != null && Files.exists(cache)) {
+			return Files.readAllBytes(cache);
+		}
+
+		HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(6)).build();
+		HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30)).build();
+		HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+		if (response.statusCode() >= 400) {
+			throw new IOException("HTTP " + response.statusCode() + " for " + url);
+		}
+
+		byte[] body = response.body();
+
+		if (cache != null) {
+			try {
+				Files.createDirectories(cache.getParent());
+				Files.write(cache, body);
+			} catch (IOException e) {
+				SchematicIndexMod.LOGGER.debug("Could not cache image {}", url, e);
+			}
+		}
+
+		return body;
+	}
+
+	private static @Nullable Path cacheFile(String url) {
+		try {
+			MessageDigest digest = MessageDigest.getInstance("SHA-256");
+			byte[] hash = digest.digest(url.getBytes(StandardCharsets.UTF_8));
+			StringBuilder hex = new StringBuilder();
+
+			for (int i = 0; i < 20; i++) {
+				hex.append(String.format("%02x", hash[i]));
+			}
+
+			return cacheDirectory().resolve(hex + ".img");
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
+	private static Path cacheDirectory() {
+		return FabricLoader.getInstance().getGameDir().resolve(SchematicIndexMod.MOD_ID).resolve("imagecache");
 	}
 
 	/** Must run on the render thread - texture upload touches the GPU. */
@@ -187,9 +264,9 @@ public final class ImageStore {
 				return;
 			}
 
-			Identifier id = Identifier.fromNamespaceAndPath(SchematicIndexMod.MOD_ID, "test/" + decoded.index());
-			client.getTextureManager().register(id, new DynamicTexture(() -> "schematicindex-" + decoded.index(), decoded.image()));
-			READY.put(decoded.index(), id);
+			Identifier id = Identifier.fromNamespaceAndPath(SchematicIndexMod.MOD_ID, "cache/" + (uploadCounter++));
+			client.getTextureManager().register(id, new DynamicTexture(() -> "schematicindex-image", decoded.image()));
+			READY.put(decoded.key(), id);
 		}
 	}
 
@@ -207,6 +284,27 @@ public final class ImageStore {
 
 		while ((pending = PENDING.poll()) != null) {
 			pending.image().close();
+		}
+	}
+
+	/** Deletes the on-disk image cache. Best-effort; called from the Clear cache action. */
+	public static void clearDiskCache() {
+		Path directory = cacheDirectory();
+
+		if (!Files.isDirectory(directory)) {
+			return;
+		}
+
+		try (Stream<Path> stream = Files.walk(directory)) {
+			stream.sorted(Comparator.reverseOrder()).forEach(path -> {
+				try {
+					Files.deleteIfExists(path);
+				} catch (IOException ignored) {
+					// Leave whatever is locked; the cache is disposable.
+				}
+			});
+		} catch (IOException e) {
+			SchematicIndexMod.LOGGER.debug("Could not clear image cache", e);
 		}
 	}
 }

@@ -1,0 +1,21 @@
+{
+  "name": "schematic-index-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Backend API and admin site for The Schematic Index",
+  "scripts": {
+    "start": "node --experimental-sqlite src/index.js",
+    "dev": "node --watch --experimental-sqlite src/index.js",
+    "seed": "node --experimental-sqlite scripts/seed.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "prismarine-nbt": "^2.8.0"
+  }
+}

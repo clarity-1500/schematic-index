@@ -2,16 +2,19 @@ package com.fudgedy.schematicindex.gui;
 
 import com.fudgedy.schematicindex.SchematicIndexMod;
 import com.fudgedy.schematicindex.Settings;
+import com.fudgedy.schematicindex.catalogue.Backend;
+import com.fudgedy.schematicindex.catalogue.Bookmarks;
 import com.fudgedy.schematicindex.catalogue.Catalogue;
 import com.fudgedy.schematicindex.catalogue.Category;
 import com.fudgedy.schematicindex.catalogue.Download;
 import com.fudgedy.schematicindex.catalogue.Follows;
-import com.fudgedy.schematicindex.catalogue.MockCatalogue;
 import com.fudgedy.schematicindex.catalogue.NewsFeed;
 import com.fudgedy.schematicindex.catalogue.SchematicEntry;
+import com.google.gson.JsonObject;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.Minecraft;
@@ -31,11 +34,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * The catalogue browser. Layout only - entries come from {@link MockCatalogue} and images from
@@ -47,6 +48,8 @@ public class IndexScreen extends Screen {
 	private static final int TOP_BAR_HEIGHT = 32;
 	private static final int RAIL_WIDTH = 34;
 	private static final int RAIL_ITEM_HEIGHT = 34;
+	/** How far a rail icon grows on hover - larger than a pill's, so the lift is easy to feel. */
+	private static final float RAIL_HOVER_GROW = 0.14F;
 	private static final int RAIL_ITEM_GAP = 8;
 	private static final int GUTTER = 6;
 	private static final int CAPTION_HEIGHT = 28;
@@ -55,15 +58,16 @@ public class IndexScreen extends Screen {
 	private static final int SCROLL_STEP = 24;
 	private static final int HEART_SIZE = 9;
 	private static final int FIELD_HEIGHT = 16;
+	/** How many cards a page of the grid reveals; more load as the scroll nears the bottom. */
+	private static final int PAGE_SIZE = 12;
+	/** Room left below the last row for the "loading more" indicator while a page is pending. */
+	private static final int LOADING_ROW = 20;
 
-	/** Client-side only until there is a backend to post likes to. */
-	private static final Set<String> LIKED = new HashSet<>();
-
-	/** Posts the user chose to keep. This is what the Saved tab lists - not likes, not downloads. */
-	private static final Set<String> SAVED_POSTS = new HashSet<>();
-
-	/** When each post was last liked, so the heart can play its pop. */
+	/** When each post was last liked, so the heart can play its pop. Purely visual, so not persisted. */
 	private static final Map<String, Long> LIKE_POPS = new HashMap<>();
+
+	/** Last-seen download state per post, so the finish/fail sound plays once on the transition. */
+	private final Map<String, Download.State> downloadStates = new HashMap<>();
 
 	private enum Page {
 		BROWSE("Browse"),
@@ -94,7 +98,7 @@ public class IndexScreen extends Screen {
 
 	private Page page = Page.BROWSE;
 	private Category category = Category.ALL;
-	private MockCatalogue.Sort sort = MockCatalogue.Sort.NEWEST;
+	private Catalogue.Sort sort = Catalogue.Sort.NEWEST;
 	private String query = "";
 
 	private int contentX;
@@ -108,6 +112,8 @@ public class IndexScreen extends Screen {
 
 	private float scroll;
 	private float maxScroll;
+	/** How many of {@link #visible} are currently revealed - grows a page at a time (infinite scroll). */
+	private int shownCount = PAGE_SIZE;
 
 	private EditBox searchBox;
 	private EditBox codeBox;
@@ -162,7 +168,27 @@ public class IndexScreen extends Screen {
 	private final Rect detailSave = new Rect();
 	private final Rect detailFollow = new Rect();
 	private final Rect detailClose = new Rect();
+	private final Rect detailCornerClose = new Rect();
 	private final Rect detailHeart = new Rect();
+	/** Set when a download would replace an existing file and the overwrite prompt is on. */
+	private @Nullable SchematicEntry pendingOverwrite;
+	private final Rect overwriteReplace = new Rect();
+	private final Rect overwriteCancel = new Rect();
+	/** The report affordance and, when open, the reason picker over the detail modal. */
+	private static final String[] REPORT_REASONS = {
+			"NSFW / Explicit Content", "Stealing Credit", "Spam / Misleading", "Other"};
+	/** Server reason codes, aligned to {@link #REPORT_REASONS} by index. */
+	private static final String[] REPORT_CODES = {"NSFW", "STOLEN", "SPAM", "OTHER"};
+	private final Rect detailReport = new Rect();
+	private boolean reportOpen;
+	private final Rect[] reportReasonRects = new Rect[REPORT_REASONS.length];
+	private final Rect reportCancel = new Rect();
+	/** Second report step: a context box to explain the report. */
+	private boolean reportContextOpen;
+	private int reportReasonIndex = -1;
+	private String reportContext = "";
+	private final Rect reportSubmit = new Rect();
+	private static final int REPORT_CONTEXT_MAX = 99;
 	/** 1 = every layer shown; lower values hide the top of the build so interiors can be read. */
 	private float detailLayer = 1.0F;
 	private boolean draggingLayer;
@@ -177,6 +203,53 @@ public class IndexScreen extends Screen {
 	private final Rect changeFolderButton = new Rect();
 	private final Rect openFolderButton = new Rect();
 	private final Rect resetFolderButton = new Rect();
+	private final Rect gridDensityButton = new Rect();
+	private final Rect clearCacheButton = new Rect();
+	private final Rect toastsToggle = new Rect();
+	private final Rect notificationsToggle = new Rect();
+	private final Rect termsButton = new Rect();
+
+	// First-run tutorial: a short spotlight tour of the layout.
+	private static final String[][] TUTORIAL = {
+			{"Welcome to The Schematic Index",
+					"Browse the latest community schematics via posts and download them directly into your "
+							+ "schematics folder."},
+			{"Find your way around",
+					"Use the left bar to switch between Browse, Saved, News, Upload and Settings."},
+			{"Filter by category",
+					"Filter posts by seeing exactly what kind of schematic you want with our tags."},
+			{"Search",
+					"Use the search bar to search for schematic names, the posters, and even the designers."},
+			{"Explore posts",
+					"Click on a post to view more images of the build or even preview it in 3D. You can "
+							+ "download the schematic or save the post for later."}};
+	private boolean tutorialActive;
+	private boolean tutorialShown;
+	private int tutorialStep;
+	private final Rect tutorialNext = new Rect();
+	private final Rect tutorialBack = new Rect();
+	private final Rect tutorialSkip = new Rect();
+
+	// Terms of service, shown before anything else on first open and gating the online features.
+	private static final String TERMS_BODY =
+			"By using The Schematic Index, you agree to these terms. If you do not agree, you cannot use "
+					+ "the online service.\n\n"
+					+ "Data & Privacy: The Service connects to external servers to sync the online catalog. "
+					+ "It transmits a random local identifier along with your interactions (likes, downloads, "
+					+ "and reports). You can revoke consent anytime in Settings, which disables online "
+					+ "connectivity.\n\n"
+					+ "Content Ownership: Do not upload content you do not have the legal rights to "
+					+ "distribute. By uploading, you grant us a license to host and share your schematic. We "
+					+ "reserve the right to remove infringing content and terminate access for abuse.\n\n"
+					+ "Disclaimer: This service is provided \"as-is.\" We are not liable for server downtime "
+					+ "or issues caused by third-party files.";
+	private boolean tosOpen;
+	private float tosScroll;
+	private float tosMaxScroll;
+	/** Set once the reader reaches the bottom; the Agree/Decline buttons stay disabled until then. */
+	private boolean tosScrolledBottom;
+	private final Rect tosAgree = new Rect();
+	private final Rect tosDecline = new Rect();
 
 	public IndexScreen(@Nullable Screen parent) {
 		super(Component.literal("The Schematic Index"));
@@ -193,7 +266,8 @@ public class IndexScreen extends Screen {
 		this.contentWidth = Math.min(available, CONTENT_MAX_WIDTH);
 		this.contentX = RAIL_WIDTH + OUTER_MARGIN + (available - this.contentWidth) / 2;
 
-		this.columns = columnsFor(this.contentWidth);
+		// Grid density shifts the width-based column count: more columns = smaller thumbnails.
+		this.columns = Math.max(2, Math.min(7, columnsFor(this.contentWidth) + Settings.gridDensity()));
 		this.cardWidth = (this.contentWidth - GUTTER * (this.columns - 1)) / this.columns;
 		this.cardHeight = imageHeight(this.cardWidth) + CAPTION_HEIGHT;
 
@@ -234,9 +308,27 @@ public class IndexScreen extends Screen {
 		this.titleBox.setMaxLength(Math.max(24, 190 / avgBoldChar));
 
 		this.layoutChips();
+
+		// The terms come first: until they are accepted, nothing else is reachable. The tour follows
+		// once they agree. Both are guarded so a window resize does not reopen them.
+		if (!Settings.termsAccepted()) {
+			this.openTerms();
+		} else {
+			this.maybeStartTutorial();
+		}
+
 		this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
 		this.gridBottom = this.height - OUTER_MARGIN;
 		this.refilter();
+	}
+
+	private void maybeStartTutorial() {
+		if (!Settings.tutorialSeen() && !this.tutorialShown) {
+			this.tutorialShown = true;
+			this.tutorialActive = true;
+			this.tutorialStep = 0;
+			this.page = Page.BROWSE;
+		}
 	}
 
 	private EditBox textField(int x, int y, int width, String hint, String value) {
@@ -333,7 +425,7 @@ public class IndexScreen extends Screen {
 		this.visible.clear();
 		String needle = this.query.trim().toLowerCase(Locale.ROOT);
 
-		for (SchematicEntry entry : MockCatalogue.entries()) {
+		for (SchematicEntry entry : Catalogue.posts()) {
 			if (this.page == Page.SAVED && !isSaved(entry)) {
 				continue;
 			}
@@ -361,32 +453,81 @@ public class IndexScreen extends Screen {
 		};
 		this.visible.sort(comparator);
 
-		int rows = (this.visible.size() + this.columns - 1) / this.columns;
+		// A filter/sort change starts the list back at the first page.
+		this.shownCount = PAGE_SIZE;
+		this.recomputeScrollBounds();
+	}
+
+	/** How many cards are actually on screen right now - the revealed window, capped by what matches. */
+	private int shownCap() {
+		return Math.min(this.shownCount, this.visible.size());
+	}
+
+	/** Recomputes {@link #maxScroll} from the revealed window, leaving room for the loading indicator. */
+	private void recomputeScrollBounds() {
+		int shown = this.shownCap();
+		int rows = (shown + this.columns - 1) / this.columns;
 		int contentHeight = rows * this.cardHeight + Math.max(0, rows - 1) * GUTTER;
+
+		if (shown < this.visible.size()) {
+			contentHeight += LOADING_ROW;
+		}
+
 		this.maxScroll = Math.max(0.0F, contentHeight - (this.gridBottom - this.gridTop));
 		this.scroll = Math.min(this.scroll, this.maxScroll);
 	}
 
-	private static boolean isSaved(SchematicEntry entry) {
-		return SAVED_POSTS.contains(entry.id());
-	}
-
-	private static void toggleSaved(SchematicEntry entry) {
-		if (SAVED_POSTS.remove(entry.id())) {
-			Theme.click(0.9F);
+	/** Reveals the next page once the scroll nears the bottom, until the whole list is shown. */
+	private void maybeLoadMore() {
+		if (this.shownCount >= this.visible.size()) {
 			return;
 		}
 
-		SAVED_POSTS.add(entry.id());
-		Theme.click(1.3F);
+		if (this.scroll >= this.maxScroll - (this.cardHeight + GUTTER)) {
+			this.shownCount = Math.min(this.visible.size(), this.shownCount + PAGE_SIZE);
+			this.recomputeScrollBounds();
+		}
+	}
+
+	private static boolean isSaved(SchematicEntry entry) {
+		return Bookmarks.isSaved(entry.id());
+	}
+
+	private static void toggleSaved(SchematicEntry entry) {
+		Theme.click(Bookmarks.toggleSaved(entry.id()) ? 1.3F : 0.9F);
 	}
 
 	private static int likesOf(SchematicEntry entry) {
-		return entry.likes() + (LIKED.contains(entry.id()) ? 1 : 0);
+		return entry.likes() + (isLikedBy(entry) ? 1 : 0);
+	}
+
+	/** Whether this device likes a post: the server's flag when present, else the local record. */
+	private static boolean isLikedBy(SchematicEntry entry) {
+		return entry.liked() || Bookmarks.isLiked(entry.id());
 	}
 
 	private static int imageSlot(SchematicEntry entry, int offset) {
 		return entry.imageStart() + offset;
+	}
+
+	/** One gallery image of a post - a catalogue URL when the post has them, else the local test image. */
+	private @Nullable Identifier imageTexture(SchematicEntry entry, int index) {
+		List<String> urls = entry.imageUrls();
+
+		if (!urls.isEmpty()) {
+			return ImageStore.texture(urls.get(Math.floorMod(index, urls.size())));
+		}
+
+		return ImageStore.texture(imageSlot(entry, index));
+	}
+
+	/** The card image: the post's thumbnail URL when it has one, else its first gallery image. */
+	private @Nullable Identifier thumbnailTexture(SchematicEntry entry) {
+		if (entry.thumbnailUrl() != null && !entry.thumbnailUrl().isBlank()) {
+			return ImageStore.texture(entry.thumbnailUrl());
+		}
+
+		return this.imageTexture(entry, 0);
 	}
 
 	@Override
@@ -418,14 +559,264 @@ public class IndexScreen extends Screen {
 
 		this.renderRail(ctx, hoverX, hoverY);
 		this.renderTopBar(ctx, hoverX, hoverY);
-		this.searchBox.render(ctx, mouseX, mouseY, partialTick);
+
+		// The search bar belongs to the grid pages only.
+		this.searchBox.setVisible(this.gridPage());
+
+		if (this.gridPage()) {
+			this.searchBox.render(ctx, mouseX, mouseY, partialTick);
+		} else if (this.searchBox.isFocused()) {
+			this.searchBox.setFocused(false);
+		}
 
 		if (modalOpen) {
 			this.renderDetail(ctx, mouseX, mouseY);
+
+			if (this.pendingOverwrite != null) {
+				this.renderOverwriteConfirm(ctx, mouseX, mouseY);
+			} else if (this.reportOpen) {
+				this.renderReportPicker(ctx, mouseX, mouseY);
+			} else if (this.reportContextOpen) {
+				this.renderReportContext(ctx, mouseX, mouseY);
+			}
 		}
 
 		// Toasts sit above everything, including the modal.
 		Toasts.render(ctx);
+
+		// The first-run tour sits above even the toasts - it owns the screen until dismissed.
+		if (this.tutorialActive) {
+			this.renderTutorial(ctx, mouseX, mouseY);
+		}
+
+		// The terms gate sits above everything, including the tour.
+		if (this.tosOpen) {
+			this.renderTos(ctx, mouseX, mouseY);
+		}
+	}
+
+	/** Opens the terms fresh: the reader starts at the top and must scroll down before answering. */
+	private void openTerms() {
+		this.tosOpen = true;
+		this.tosScroll = 0.0F;
+		this.tosScrolledBottom = false;
+	}
+
+	private void renderTos(GuiGraphics ctx, int mouseX, int mouseY) {
+		ctx.fill(0, 0, this.width, this.height, 0xE0000000);
+
+		int pad = 14;
+		int line = this.font.lineHeight;
+		int cardWidth = Math.min(this.width - 40, 360);
+		int cardHeight = Math.min(this.height - 40, 210);
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_ELEVATED);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.ACCENT);
+		Theme.text(ctx, this.font, Theme.bold("Terms of Service"), x + pad, y + pad, Theme.TEXT);
+
+		// The scrolling body sits between the title and the button row.
+		int bodyTop = y + pad + line + 6;
+		int bodyBottom = y + cardHeight - pad - 16 - 8;
+		int bodyWidth = cardWidth - pad * 2;
+
+		List<String> body = this.wrapParagraphs(TERMS_BODY, bodyWidth - 6);
+		int contentHeight = body.size() * (line + 1);
+		int viewport = bodyBottom - bodyTop;
+		this.tosMaxScroll = Math.max(0.0F, contentHeight - viewport);
+		this.tosScroll = Math.max(0.0F, Math.min(this.tosMaxScroll, this.tosScroll));
+
+		// Once the reader has reached the end, unlock the buttons (and stay unlocked).
+		if (this.tosScroll >= this.tosMaxScroll - 0.5F) {
+			this.tosScrolledBottom = true;
+		}
+
+		ctx.enableScissor(x + pad, bodyTop, x + cardWidth - pad, bodyBottom);
+		int ty = bodyTop - Math.round(this.tosScroll);
+
+		for (String row : body) {
+			Theme.text(ctx, this.font, row, x + pad, ty, Theme.TEXT_MUTE);
+			ty += line + 1;
+		}
+
+		ctx.disableScissor();
+
+		// Scroll track + thumb on the right, when there is more than fits.
+		if (this.tosMaxScroll > 0.0F) {
+			int trackX = x + cardWidth - pad + 2;
+			Theme.roundedRect(ctx, trackX, bodyTop, 2, viewport, 1, Theme.SURFACE_CARD);
+			int thumbHeight = Math.max(12, Math.round((float) viewport * viewport / contentHeight));
+			int thumbY = bodyTop + Math.round((viewport - thumbHeight) * (this.tosScroll / this.tosMaxScroll));
+			Theme.roundedRect(ctx, trackX, thumbY, 2, thumbHeight, 1, Theme.ACCENT_BRIGHT);
+		}
+
+		int buttonY = y + cardHeight - pad - 16;
+		int agreeWidth = this.font.width(Theme.bold("I Agree")) + 20;
+		int declineWidth = this.font.width(Theme.bold("Decline")) + 20;
+		this.tosDecline.set(x + pad, buttonY, declineWidth, 16);
+		this.tosAgree.set(x + cardWidth - pad - agreeWidth, buttonY, agreeWidth, 16);
+
+		if (this.tosScrolledBottom) {
+			this.pillButton(ctx, this.tosDecline, "Decline", mouseX, mouseY, false);
+			this.pillButton(ctx, this.tosAgree, "I Agree", mouseX, mouseY, true);
+		} else {
+			// Disabled until they read to the bottom, with a hint in the middle.
+			this.disabledPill(ctx, this.tosDecline, "Decline");
+			this.disabledPill(ctx, this.tosAgree, "I Agree");
+			String hint = "Scroll down to continue";
+			Theme.text(ctx, this.font, hint, x + (cardWidth - this.font.width(hint)) / 2, buttonY + 4, Theme.TEXT_ASH);
+		}
+	}
+
+	/** A greyed-out, non-interactive pill for an action that is not available yet. */
+	private void disabledPill(GuiGraphics ctx, Rect rect, String label) {
+		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL, Theme.SURFACE_CARD);
+		String text = Theme.bold(label);
+		Theme.text(ctx, this.font, text, rect.x + (rect.width - this.font.width(text)) / 2,
+				rect.y + (rect.height - this.font.lineHeight) / 2 + 1, Theme.TEXT_ASH);
+	}
+
+	private void clickTos(double mouseX, double mouseY) {
+		// The buttons do nothing until the terms have been read to the bottom.
+		if (!this.tosScrolledBottom) {
+			return;
+		}
+
+		if (this.tosAgree.contains(mouseX, mouseY)) {
+			Settings.acceptTerms();
+			this.tosOpen = false;
+			Theme.click(1.2F);
+			this.maybeStartTutorial();
+		} else if (this.tosDecline.contains(mouseX, mouseY)) {
+			// Declining withdraws consent and leaves - the service can't be used without it.
+			Settings.revokeTerms();
+			this.onClose();
+		}
+	}
+
+	// ------------------------------------------------------------------ first-run tour
+
+	/** The element the current step points at, or null for the centered welcome step. */
+	private int @Nullable [] tutorialTarget() {
+		return switch (this.tutorialStep) {
+			case 1 -> {
+				// The left rail, from the first icon to the last.
+				int top = this.railRects.isEmpty() ? TOP_BAR_HEIGHT : this.railRects.get(0).y - 3;
+				int bottom = this.railRects.isEmpty() ? this.height
+						: this.railRects.get(this.railRects.size() - 1).y
+								+ this.railRects.get(this.railRects.size() - 1).height + 3;
+				yield new int[]{0, top, RAIL_WIDTH, bottom - top};
+			}
+			// The category chip row.
+			case 2 -> new int[]{RAIL_WIDTH, TOP_BAR_HEIGHT, this.width - RAIL_WIDTH, this.chipRowHeight};
+			// The search bar in the top bar.
+			case 3 -> {
+				int searchWidth = this.searchWidth();
+				int searchX = this.contentX + (this.contentWidth - searchWidth) / 2;
+				int searchY = (TOP_BAR_HEIGHT - 16) / 2;
+				yield new int[]{searchX - 2, searchY - 2, searchWidth + 4, 20};
+			}
+			// The first grid card.
+			case 4 -> new int[]{this.contentX, this.gridTop, this.cardWidth, this.cardHeight};
+			default -> null;
+		};
+	}
+
+	private void renderTutorial(GuiGraphics ctx, int mouseX, int mouseY) {
+		int[] target = this.tutorialTarget();
+
+		// Spotlight: dim everything except the target with four bands, so the highlighted element stays
+		// fully lit. The welcome step has no target, so the whole screen dims.
+		if (target == null) {
+			ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+		} else {
+			int tx = target[0];
+			int ty = target[1];
+			int tw = target[2];
+			int th = target[3];
+			ctx.fill(0, 0, this.width, ty, Theme.SCRIM);
+			ctx.fill(0, ty + th, this.width, this.height, Theme.SCRIM);
+			ctx.fill(0, ty, tx, ty + th, Theme.SCRIM);
+			ctx.fill(tx + tw, ty, this.width, ty + th, Theme.SCRIM);
+			Theme.roundedOutline(ctx, tx - 1, ty - 1, tw + 2, th + 2, Theme.RADIUS_CARD, Theme.ACCENT_BRIGHT);
+		}
+
+		// The explaining card, kept in the lower-centre so it never covers the element it describes.
+		String[] step = TUTORIAL[this.tutorialStep];
+		int cardWidth = 260;
+		int pad = 12;
+		List<String> body = this.wrap(step[1], cardWidth - pad * 2, 4);
+		int cardHeight = pad + this.font.lineHeight + 4 + body.size() * (this.font.lineHeight + 1) + 10 + 16 + pad;
+		int x = (this.width - cardWidth) / 2;
+		int y = this.height - cardHeight - 24;
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_ELEVATED);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+
+		int ty = y + pad;
+		Theme.text(ctx, this.font, Theme.bold(step[0]), x + pad, ty, Theme.TEXT);
+		ty += this.font.lineHeight + 4;
+
+		for (String row : body) {
+			Theme.text(ctx, this.font, row, x + pad, ty, Theme.TEXT_MUTE);
+			ty += this.font.lineHeight + 1;
+		}
+
+		// Buttons: Skip subtle on the left, Back (when past step one) and the prominent Next/Done right.
+		int buttonY = y + cardHeight - pad - 16;
+		boolean last = this.tutorialStep == TUTORIAL.length - 1;
+		String nextLabel = last ? "Done" : "Next";
+		int nextWidth = this.font.width(Theme.bold(nextLabel)) + 20;
+		int skipWidth = this.font.width(Theme.bold("Skip")) + 16;
+
+		this.tutorialSkip.set(x + pad, buttonY, skipWidth, 16);
+		this.tutorialNext.set(x + cardWidth - pad - nextWidth, buttonY, nextWidth, 16);
+		this.pillButton(ctx, this.tutorialSkip, "Skip", mouseX, mouseY, false);
+		this.pillButton(ctx, this.tutorialNext, nextLabel, mouseX, mouseY, true);
+
+		if (this.tutorialStep > 0) {
+			int backWidth = this.font.width(Theme.bold("Back")) + 16;
+			this.tutorialBack.set(this.tutorialNext.x - 6 - backWidth, buttonY, backWidth, 16);
+			this.pillButton(ctx, this.tutorialBack, "Back", mouseX, mouseY, false);
+		} else {
+			this.tutorialBack.set(0, 0, 0, 0);
+		}
+
+		// Progress dots, centred in the gap between Skip and Next, on the button row.
+		int dots = TUTORIAL.length;
+		int dotGap = 8;
+		int dotsWidth = dots * 3 + (dots - 1) * (dotGap - 3);
+		int dotX = x + (cardWidth - dotsWidth) / 2;
+		int dotY = buttonY + (16 - 3) / 2;
+
+		for (int i = 0; i < dots; i++) {
+			Theme.roundedRect(ctx, dotX, dotY, 3, 3, 1, i == this.tutorialStep ? Theme.ACCENT_BRIGHT : Theme.TEXT_ASH);
+			dotX += dotGap;
+		}
+	}
+
+	private void clickTutorial(double mouseX, double mouseY) {
+		if (this.tutorialNext.contains(mouseX, mouseY)) {
+			Theme.click(1.1F);
+
+			if (this.tutorialStep >= TUTORIAL.length - 1) {
+				this.finishTutorial();
+			} else {
+				this.tutorialStep++;
+			}
+		} else if (this.tutorialStep > 0 && this.tutorialBack.contains(mouseX, mouseY)) {
+			Theme.click(0.9F);
+			this.tutorialStep--;
+		} else if (this.tutorialSkip.contains(mouseX, mouseY)) {
+			Theme.click(0.9F);
+			this.finishTutorial();
+		}
+	}
+
+	private void finishTutorial() {
+		this.tutorialActive = false;
+		Settings.markTutorialSeen();
 	}
 
 	// ------------------------------------------------------------------ chrome
@@ -454,16 +845,23 @@ public class IndexScreen extends Screen {
 			Theme.text(ctx, this.font, Theme.bold(tail), titleX, 12, Theme.ACCENT_BRIGHT);
 		}
 
-		int searchY = (TOP_BAR_HEIGHT - 16) / 2;
-		boolean focused = this.searchBox.isFocused();
-		Theme.roundedRect(ctx, searchX, searchY, searchWidth, 16, Theme.RADIUS_PILL,
-				focused ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
+		if (this.gridPage()) {
+			int searchY = (TOP_BAR_HEIGHT - 16) / 2;
+			boolean focused = this.searchBox.isFocused();
+			Theme.roundedRect(ctx, searchX, searchY, searchWidth, 16, Theme.RADIUS_PILL,
+					focused ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
 
-		if (focused) {
-			Theme.roundedOutline(ctx, searchX, searchY, searchWidth, 16, Theme.RADIUS_PILL, Theme.ACCENT);
+			if (focused) {
+				Theme.roundedOutline(ctx, searchX, searchY, searchWidth, 16, Theme.RADIUS_PILL, Theme.ACCENT);
+			}
 		}
 
 		this.pillButton(ctx, this.closeButton, "Close", mouseX, mouseY, false);
+	}
+
+	/** The Browse and Saved pages carry the grid, chip row and search bar; the others do not. */
+	private boolean gridPage() {
+		return this.page == Page.BROWSE || this.page == Page.SAVED;
 	}
 
 	private void renderRail(GuiGraphics ctx, int mouseX, int mouseY) {
@@ -487,10 +885,16 @@ public class IndexScreen extends Screen {
 
 			int iconX = rect.x + (RAIL_WIDTH - 17) / 2;
 			int iconY = rect.y + (RAIL_ITEM_HEIGHT - 16) / 2;
+
+			// The icon tile grows on hover and pops when its tab is selected.
+			float hover = Theme.buttonHover(rect, hovered);
+			float scale = Theme.popScale(rect, 1.0F + RAIL_HOVER_GROW * hover);
+			Theme.pushScale(ctx, iconX - 2, iconY - 2, 20, 20, scale);
 			// A lighter tile behind each icon so they read as buttons rather than floating items.
 			Theme.roundedRect(ctx, iconX - 2, iconY - 2, 20, 20, Theme.RADIUS_PILL,
 					active ? Theme.RAIL_TILE_ACTIVE : Theme.RAIL_TILE);
 			ctx.renderItem(pages[i].icon(), iconX, iconY);
+			Theme.pop(ctx);
 
 			// Label appears beside the rail on hover, so the icons stay uncluttered.
 			if (hovered && !active) {
@@ -619,6 +1023,17 @@ public class IndexScreen extends Screen {
 		String label = "Download";
 
 		if (progress != null) {
+			// Announce a finish or failure once, on the frame the state first changes.
+			if (progress.state() != this.downloadStates.get(entry.id())) {
+				if (progress.state() == Download.State.DONE) {
+					Theme.success();
+				} else if (progress.state() == Download.State.FAILED) {
+					Theme.failure();
+				}
+
+				this.downloadStates.put(entry.id(), progress.state());
+			}
+
 			float fraction = switch (progress.state()) {
 				case DONE -> 1.0F;
 				case RUNNING -> progress.fraction();
@@ -664,10 +1079,16 @@ public class IndexScreen extends Screen {
 			boolean hovered = rect.contains(mouseX, mouseY);
 			int fill = active ? Theme.ACCENT : (hovered ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
 
+			float hover = Theme.buttonHover(rect, hovered);
+			float scale = Theme.popScale(rect, 1.0F + Theme.HOVER_SCALE * hover);
+			Theme.pushScale(ctx, rect.x, rect.y, rect.width, rect.height, scale);
+
 			Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL, fill);
 			Theme.text(ctx, this.font, Theme.bold(value.label()), rect.x + 6,
 					rect.y + (CHIP_HEIGHT - this.font.lineHeight) / 2 + 1,
 					active ? Theme.ON_ACCENT : Theme.TEXT_MUTE);
+
+			Theme.pop(ctx);
 		}
 
 		this.pillButton(ctx, this.sortButton, "Sort: " + this.sort.label(), mouseX, mouseY, false);
@@ -695,18 +1116,21 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
+		this.maybeLoadMore();
+		int shown = this.shownCap();
+
 		ctx.enableScissor(this.contentX, this.gridTop, this.contentX + this.contentWidth, this.gridBottom);
 
 		int rowHeight = this.cardHeight + GUTTER;
 		int firstRow = Math.max(0, (int) (this.scroll / rowHeight));
-		int lastRow = Math.min((this.visible.size() - 1) / this.columns,
+		int lastRow = Math.min((shown - 1) / this.columns,
 				(int) ((this.scroll + (this.gridBottom - this.gridTop)) / rowHeight));
 
 		for (int row = firstRow; row <= lastRow; row++) {
 			for (int column = 0; column < this.columns; column++) {
 				int index = row * this.columns + column;
 
-				if (index >= this.visible.size()) {
+				if (index >= shown) {
 					break;
 				}
 
@@ -714,6 +1138,15 @@ public class IndexScreen extends Screen {
 				int y = this.gridTop + row * rowHeight - Math.round(this.scroll);
 				this.renderCard(ctx, this.visible.get(index), x, y, mouseX, mouseY);
 			}
+		}
+
+		// A "loading more" line under the last row while further pages are still to be revealed.
+		if (shown < this.visible.size()) {
+			int rows = (shown + this.columns - 1) / this.columns;
+			int y = this.gridTop + rows * rowHeight - Math.round(this.scroll) + 4;
+			String more = "Loading more...";
+			Theme.text(ctx, this.font, more, this.contentX + (this.contentWidth - this.font.width(more)) / 2, y,
+					Theme.TEXT_ASH);
 		}
 
 		ctx.disableScissor();
@@ -786,7 +1219,7 @@ public class IndexScreen extends Screen {
 		Theme.roundedRect(ctx, x, y, this.cardWidth, this.cardHeight, Theme.RADIUS_CARD, Theme.SURFACE_CARD);
 
 		int imageHeight = imageHeight(this.cardWidth);
-		Identifier texture = ImageStore.texture(imageSlot(entry, 0));
+		Identifier texture = this.thumbnailTexture(entry);
 
 		if (texture != null) {
 			Theme.image(ctx, texture, x, y, this.cardWidth, imageHeight);
@@ -801,7 +1234,7 @@ public class IndexScreen extends Screen {
 
 		Rect heart = this.heartRect(x, y, imageHeight);
 		Theme.roundedRect(ctx, heart.x - 2, heart.y - 2, HEART_SIZE + 4, HEART_SIZE + 4, Theme.RADIUS_PILL, 0xCC0F1114);
-		Theme.heartPopped(ctx, heart.x, heart.y, LIKED.contains(entry.id()), popAge(entry));
+		Theme.heartPopped(ctx, heart.x, heart.y, isLikedBy(entry), popAge(entry));
 
 		if (isSaved(entry)) {
 			int badge = this.font.width("Saved") + 8;
@@ -1023,8 +1456,32 @@ public class IndexScreen extends Screen {
 				"Confirm first when overwriting a file that contains the same name, when downloading "
 						+ "a new schematic.", Settings.confirmOverwrite(),
 				formX, y, formWidth, mouseX, mouseY);
+		y = this.settingRow(ctx, this.toastsToggle, "Show toasts",
+				"Show the slide-in notification cards in the corner for things like downloads and follows.",
+				Settings.toasts(), formX, y, formWidth, mouseX, mouseY);
+		y = this.settingRow(ctx, this.notificationsToggle, "Creator notifications",
+				"Get a toast when a creator you follow posts a new schematic.",
+				Settings.notifications(), formX, y, formWidth, mouseX, mouseY);
 
+		// Grid density.
 		y += 6;
+		Theme.text(ctx, this.font, Theme.bold("Grid density"), formX, y, Theme.TEXT);
+		y += this.font.lineHeight + 3;
+
+		for (String row : this.wrap("Changing the grid density decides how many posts can fit on one row, "
+				+ "compact provides more posts but smaller thumbnails, while large gives you a great view of "
+				+ "the thumbnails.", formWidth, 5)) {
+			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
+			y += this.font.lineHeight + 1;
+		}
+
+		y += 4;
+		int densityWidth = this.font.width(Theme.bold("Grid: Comfortable")) + 16;
+		this.gridDensityButton.set(formX, y, densityWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.gridDensityButton, "Grid: " + Settings.gridDensityLabel(), mouseX, mouseY, false);
+
+		// Download folder, below the grid density.
+		y += FIELD_HEIGHT + 12;
 		Theme.text(ctx, this.font, Theme.bold("Download folder"), formX, y, Theme.TEXT);
 		y += this.font.lineHeight + 3;
 
@@ -1057,6 +1514,38 @@ public class IndexScreen extends Screen {
 		} else {
 			this.resetFolderButton.set(0, 0, 0, 0);
 		}
+
+		// Cache, at the bottom.
+		y += FIELD_HEIGHT + 12;
+		Theme.text(ctx, this.font, Theme.bold("Cache"), formX, y, Theme.TEXT);
+		y += this.font.lineHeight + 3;
+
+		for (String row : this.wrap("Clearing the cache frees the memory used by loaded thumbnails and 3D "
+				+ "previews; they reload when next shown.", formWidth, 4)) {
+			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
+			y += this.font.lineHeight + 1;
+		}
+
+		y += 4;
+		int clearWidth = this.font.width(Theme.bold("Clear cache")) + 16;
+		this.clearCacheButton.set(formX, y, clearWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.clearCacheButton, "Clear cache", mouseX, mouseY, false);
+
+		// Terms of service.
+		y += FIELD_HEIGHT + 12;
+		Theme.text(ctx, this.font, Theme.bold("Terms of service"), formX, y, Theme.TEXT);
+		y += this.font.lineHeight + 3;
+
+		for (String row : this.wrap("Review the terms you agreed to, or withdraw your agreement - which "
+				+ "disables the online features.", formWidth, 3)) {
+			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
+			y += this.font.lineHeight + 1;
+		}
+
+		y += 4;
+		int termsWidth = this.font.width(Theme.bold("Review terms")) + 16;
+		this.termsButton.set(formX, y, termsWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.termsButton, "Review terms", mouseX, mouseY, false);
 	}
 
 	private int settingRow(GuiGraphics ctx, Rect rect, String label, String hint, boolean on,
@@ -1202,7 +1691,7 @@ public class IndexScreen extends Screen {
 						y + pad + imageHeight / 2 - 4, Theme.TEXT_MUTE);
 			}
 		} else {
-			Identifier texture = ImageStore.texture(imageSlot(entry, this.detailImage));
+			Identifier texture = this.imageTexture(entry, this.detailImage);
 
 			if (texture != null) {
 				Theme.image(ctx, texture, x + pad, y + pad, imageWidth, imageHeight);
@@ -1269,7 +1758,8 @@ public class IndexScreen extends Screen {
 		line += this.font.lineHeight + 6;
 
 		line = this.metaRow(ctx, "Dimensions", entry.dimensionsLabel(), infoX, line, infoWidth);
-		line = this.metaRow(ctx, "Blocks", entry.blockCountLabel(), infoX, line, infoWidth);
+		line = this.metaRow(ctx, "Total Blocks", entry.blockCountLabel(), infoX, line, infoWidth);
+		line = this.metaRow(ctx, "Volume", entry.volumeLabel(), infoX, line, infoWidth);
 
 		Theme.text(ctx, this.font, "Downloads", infoX, line, Theme.TEXT_ASH);
 		String downloads = entry.downloadsLabel();
@@ -1279,7 +1769,7 @@ public class IndexScreen extends Screen {
 				line + 2, Theme.TEXT_MUTE);
 		line += this.font.lineHeight + 2;
 
-		boolean liked = LIKED.contains(entry.id());
+		boolean liked = isLikedBy(entry);
 		String likeCount = SchematicEntry.compact(likesOf(entry));
 		Theme.text(ctx, this.font, "Likes", infoX, line, Theme.TEXT_ASH);
 		int likeWidth = this.font.width(likeCount);
@@ -1301,8 +1791,11 @@ public class IndexScreen extends Screen {
 			this.toggle(ctx, this.freeLookToggle, "Look around", this.freeLook, mouseX, mouseY);
 			line += FIELD_HEIGHT + 6;
 
-			// Layer slider: peel off the top of the build to look inside without moving the camera.
-			String layerLabel = this.detailLayer >= 1.0F ? "All" : Math.round(this.detailLayer * 100) + "%";
+			// Layer slider: peel off the top of the build to look inside without moving the camera. The
+			// count is real block layers of the model being shown, 1 to its Y height.
+			int totalLayers = this.detailLayerHeight();
+			int shownLayers = Math.max(1, Math.min(totalLayers, Math.round(this.detailLayer * totalLayers)));
+			String layerLabel = shownLayers + " / " + totalLayers;
 			Theme.text(ctx, this.font, "Layers", infoX, line, Theme.TEXT_ASH);
 			Theme.text(ctx, this.font, layerLabel, infoX + infoWidth - this.font.width(layerLabel), line, Theme.TEXT);
 			line += this.font.lineHeight + 3;
@@ -1349,6 +1842,264 @@ public class IndexScreen extends Screen {
 		this.saveButton(ctx, this.detailSave, isSaved(entry), mouseX, mouseY);
 		this.pillButton(ctx, this.detailPreview3d, previewLabel, mouseX, mouseY, false);
 		this.downloadButton(ctx, this.detailDownload, entry, mouseX, mouseY);
+
+		// A small boxed X straddling the top-right corner, the close affordance people expect. Drawn
+		// last so it sits above the modal edge; scales on hover like the other buttons.
+		int cornerSize = 14;
+		this.detailCornerClose.set(x + modalWidth - cornerSize / 2, y - cornerSize / 2, cornerSize, cornerSize);
+		boolean cornerHover = this.detailCornerClose.contains(mouseX, mouseY);
+		float cornerScale = Theme.buttonScale(this.detailCornerClose,
+				1.0F + Theme.HOVER_SCALE * Theme.buttonHover(this.detailCornerClose, cornerHover));
+		Theme.pushScale(ctx, this.detailCornerClose.x, this.detailCornerClose.y, cornerSize, cornerSize, cornerScale);
+		Theme.roundedRect(ctx, this.detailCornerClose.x, this.detailCornerClose.y, cornerSize, cornerSize,
+				Theme.RADIUS_CARD, cornerHover ? Theme.ACCENT : Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, this.detailCornerClose.x, this.detailCornerClose.y, cornerSize, cornerSize,
+				Theme.RADIUS_CARD, Theme.HAIRLINE);
+		Theme.cross(ctx, this.detailCornerClose.x + 4, this.detailCornerClose.y + 4, 6,
+				cornerHover ? Theme.ON_ACCENT : Theme.TEXT_MUTE);
+		Theme.pop(ctx);
+
+		// A report flag button straddling the bottom-left corner of the modal.
+		int flagSize = 22;
+		this.detailReport.set(x - flagSize / 2, y + modalHeight - flagSize / 2, flagSize, flagSize);
+		boolean flagHover = this.detailReport.contains(mouseX, mouseY);
+		float flagScale = Theme.buttonScale(this.detailReport,
+				1.0F + Theme.HOVER_SCALE * Theme.buttonHover(this.detailReport, flagHover));
+		Theme.pushScale(ctx, this.detailReport.x, this.detailReport.y, flagSize, flagSize, flagScale);
+		Theme.roundedRect(ctx, this.detailReport.x, this.detailReport.y, flagSize, flagSize,
+				Theme.RADIUS_CARD, flagHover ? Theme.ACCENT : Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, this.detailReport.x, this.detailReport.y, flagSize, flagSize,
+				Theme.RADIUS_CARD, flagHover ? Theme.ACCENT_BRIGHT : Theme.HAIRLINE);
+		Theme.flag(ctx, this.detailReport.x + 7, this.detailReport.y + 6, 10,
+				flagHover ? Theme.ON_ACCENT : Theme.TEXT);
+		Theme.pop(ctx);
+
+		// Tooltip so it is clear what the flag does.
+		if (flagHover) {
+			String tip = "Report this Post";
+			int tipWidth = this.font.width(tip) + 8;
+			int tipX = this.detailReport.x + flagSize + 3;
+			int tipY = this.detailReport.y + (flagSize - 12) / 2;
+			Theme.roundedRect(ctx, tipX, tipY, tipWidth, 12, Theme.RADIUS_PILL, 0xF00F1114);
+			Theme.text(ctx, this.font, tip, tipX + 4, tipY + 2, Theme.TEXT);
+		}
+	}
+
+	/** The reason picker shown after the report flag is tapped. Modal-over-modal, like the confirm card. */
+	private void renderReportPicker(GuiGraphics ctx, int mouseX, int mouseY) {
+		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+
+		int pad = 14;
+		int rowHeight = 16;
+		int reasonGap = 5;
+		int cardWidth = 232;
+		int line = this.font.lineHeight;
+		List<String> warning = this.wrap(
+				"Only report posts that break the rules. False reports are taken seriously and can get "
+						+ "your account banned from the Index.", cardWidth - pad * 2, 4);
+
+		// Spacing constants, so the card height and the layout below stay in step.
+		int titleToWarning = 12;
+		int warningToReasons = 16;
+		int reasonsToDivider = 10;
+		int dividerToCancel = 10;
+		int warnHeight = warning.size() * (line + 1);
+		int reasonsHeight = REPORT_REASONS.length * rowHeight + (REPORT_REASONS.length - 1) * reasonGap;
+
+		int cardHeight = pad + line + titleToWarning + warnHeight + warningToReasons + reasonsHeight
+				+ reasonsToDivider + 1 + dividerToCancel + rowHeight + pad;
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+		Theme.text(ctx, this.font, Theme.bold("Report this post"), x + pad, y + pad, Theme.TEXT);
+
+		int warnY = y + pad + line + titleToWarning;
+
+		for (String row : warning) {
+			Theme.text(ctx, this.font, row, x + pad, warnY, Theme.ACCENT_BRIGHT);
+			warnY += line + 1;
+		}
+
+		int rowY = warnY - 1 + warningToReasons;
+
+		for (int i = 0; i < REPORT_REASONS.length; i++) {
+			if (this.reportReasonRects[i] == null) {
+				this.reportReasonRects[i] = new Rect();
+			}
+
+			this.reportReasonRects[i].set(x + pad, rowY, cardWidth - pad * 2, rowHeight);
+			this.pillButton(ctx, this.reportReasonRects[i], REPORT_REASONS[i], mouseX, mouseY, false);
+			rowY += rowHeight + reasonGap;
+		}
+
+		// A divider so Cancel reads as a separate action, not one more reason.
+		rowY += reasonsToDivider - reasonGap;
+		ctx.fill(x + pad, rowY, x + cardWidth - pad, rowY + 1, Theme.HAIRLINE);
+		rowY += 1 + dividerToCancel;
+
+		this.reportCancel.set(x + pad, rowY, cardWidth - pad * 2, rowHeight);
+		this.pillButton(ctx, this.reportCancel, "Cancel", mouseX, mouseY, false);
+	}
+
+	/** Wraps text that contains explicit line breaks; a blank source line becomes a blank spacer line. */
+	private List<String> wrapParagraphs(String text, int width) {
+		List<String> out = new ArrayList<>();
+
+		for (String paragraph : text.split("\n")) {
+			if (paragraph.isEmpty()) {
+				out.add("");
+			} else {
+				out.addAll(this.wrapContext(paragraph, width));
+			}
+		}
+
+		return out;
+	}
+
+	/**
+	 * Wraps to a fixed width like a text editor: it prefers to break at a space, but a run too long to
+	 * fit on a line on its own is broken mid-word, so text can never spill past the box.
+	 */
+	private List<String> wrapContext(String text, int width) {
+		List<String> lines = new ArrayList<>();
+		StringBuilder current = new StringBuilder();
+
+		for (int i = 0; i < text.length(); i++) {
+			current.append(text.charAt(i));
+
+			if (this.font.width(current.toString()) <= width) {
+				continue;
+			}
+
+			// Overflowed this line: back up to the last space if there is one, else hard-break.
+			int lastSpace = current.lastIndexOf(" ");
+
+			if (lastSpace > 0) {
+				lines.add(current.substring(0, lastSpace));
+				current = new StringBuilder(current.substring(lastSpace + 1));
+			} else {
+				char carried = current.charAt(current.length() - 1);
+				lines.add(current.substring(0, current.length() - 1));
+				current = new StringBuilder().append(carried);
+			}
+		}
+
+		lines.add(current.toString());
+		return lines;
+	}
+
+	/**
+	 * The second report step: a "Context" box the reporter can type a short explanation into. The box
+	 * and the card both grow downward as the text wraps onto more lines.
+	 */
+	private void renderReportContext(GuiGraphics ctx, int mouseX, int mouseY) {
+		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+
+		int pad = 14;
+		int line = this.font.lineHeight;
+		int cardWidth = 236;
+		int boxInner = cardWidth - pad * 2 - 12;
+
+		// Wrap the current text to know how tall the box needs to be (grows with the number of lines).
+		List<String> lines = this.wrapContext(this.reportContext, boxInner);
+		int textLines = Math.max(1, lines.size());
+		int boxHeight = 8 + textLines * (line + 1) + 6;
+
+		int cardHeight = pad + line + 4 + line + 8 + boxHeight + 6 + line + 10 + 16 + pad;
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+
+		int ty = y + pad;
+		Theme.text(ctx, this.font, Theme.bold("Context"), x + pad, ty, Theme.TEXT);
+		ty += line + 4;
+		Theme.text(ctx, this.font, "Explain the report - under 100 characters.", x + pad, ty, Theme.TEXT_ASH);
+		ty += line + 8;
+
+		// The growing input box.
+		int boxX = x + pad;
+		int boxWidth = cardWidth - pad * 2;
+		Theme.roundedRect(ctx, boxX, ty, boxWidth, boxHeight, Theme.RADIUS_PILL, Theme.BACKDROP);
+		Theme.roundedOutline(ctx, boxX, ty, boxWidth, boxHeight, Theme.RADIUS_PILL, Theme.ACCENT);
+
+		int textX = boxX + 6;
+		int textY = ty + 6;
+
+		if (this.reportContext.isEmpty()) {
+			Theme.text(ctx, this.font, "Type here...", textX, textY, Theme.TEXT_ASH);
+		} else {
+			for (String row : lines) {
+				Theme.text(ctx, this.font, row, textX, textY, Theme.TEXT);
+				textY += line + 1;
+			}
+		}
+
+		// Blinking caret at the end of the last line.
+		if ((System.currentTimeMillis() / 500L) % 2L == 0L) {
+			String last = lines.isEmpty() ? "" : lines.get(lines.size() - 1);
+			int caretX = this.reportContext.isEmpty() ? textX : textX + this.font.width(last);
+			int caretY = this.reportContext.isEmpty() ? ty + 6 : ty + 6 + (textLines - 1) * (line + 1);
+			ctx.fill(caretX, caretY - 1, caretX + 1, caretY + line, Theme.TEXT);
+		}
+
+		ty += boxHeight + 6;
+		String counter = this.reportContext.length() + "/" + REPORT_CONTEXT_MAX;
+		Theme.text(ctx, this.font, counter, x + cardWidth - pad - this.font.width(counter), ty, Theme.TEXT_ASH);
+		ty += line + 10;
+
+		this.reportSubmit.set(x + pad, ty, cardWidth - pad * 2, 16);
+		this.pillButton(ctx, this.reportSubmit, "Submit report", mouseX, mouseY, true);
+	}
+
+	/**
+	 * A small confirm card over the detail modal, shown when a download would replace a file the
+	 * player already has. Modal-over-modal: it darkens the rest and captures clicks until answered.
+	 */
+	private void renderOverwriteConfirm(GuiGraphics ctx, int mouseX, int mouseY) {
+		SchematicEntry entry = this.pendingOverwrite;
+
+		if (entry == null) {
+			return;
+		}
+
+		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+
+		int cardWidth = 240;
+		int cardHeight = 96;
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+
+		int pad = 12;
+		Theme.text(ctx, this.font, Theme.bold("Replace existing file?"), x + pad, y + pad, Theme.TEXT);
+
+		int textY = y + pad + this.font.lineHeight + 4;
+		// Show the actual saved file name - the post's full title, which is what the download uses.
+		String name = Theme.clip(this.font, entry.title() + ".litematic", cardWidth - pad * 2);
+		Theme.text(ctx, this.font, name, x + pad, textY, Theme.ACCENT_BRIGHT);
+
+		List<String> lines = this.wrap("A schematic with this name is already in your download folder.",
+				cardWidth - pad * 2, 2);
+		int lineY = textY + this.font.lineHeight + 4;
+
+		for (String line : lines) {
+			Theme.text(ctx, this.font, line, x + pad, lineY, Theme.TEXT_MUTE);
+			lineY += this.font.lineHeight + 1;
+		}
+
+		int buttonY = y + cardHeight - pad - 16;
+		int buttonWidth = (cardWidth - pad * 2 - 6) / 2;
+		this.overwriteCancel.set(x + pad, buttonY, buttonWidth, 16);
+		this.overwriteReplace.set(x + pad + buttonWidth + 6, buttonY, buttonWidth, 16);
+
+		this.pillButton(ctx, this.overwriteCancel, "Cancel", mouseX, mouseY, false);
+		this.pillButton(ctx, this.overwriteReplace, "Replace", mouseX, mouseY, true);
 	}
 
 	private int metaRow(GuiGraphics ctx, String label, String value, int x, int y, int width) {
@@ -1392,7 +2143,34 @@ public class IndexScreen extends Screen {
 
 		this.registerButtonPress(mouseX, mouseY);
 
+		// The terms gate is absolute: nothing else responds until it is answered.
+		if (this.tosOpen) {
+			this.clickTos(mouseX, mouseY);
+			return true;
+		}
+
+		// The tour owns the screen while it is up: only its own buttons respond.
+		if (this.tutorialActive) {
+			this.clickTutorial(mouseX, mouseY);
+			return true;
+		}
+
 		if (this.detail != null) {
+			if (this.pendingOverwrite != null) {
+				this.clickOverwriteConfirm(mouseX, mouseY);
+				return true;
+			}
+
+			if (this.reportOpen) {
+				this.clickReportPicker(mouseX, mouseY);
+				return true;
+			}
+
+			if (this.reportContextOpen) {
+				this.clickReportContext(mouseX, mouseY);
+				return true;
+			}
+
 			if (this.detailModel && this.layerSlider.contains(mouseX, mouseY)) {
 				this.draggingLayer = true;
 				this.setLayerFromMouse(mouseX);
@@ -1414,6 +2192,7 @@ public class IndexScreen extends Screen {
 
 		for (int i = 0; i < this.railRects.size(); i++) {
 			if (this.railRects.get(i).contains(mouseX, mouseY)) {
+				Theme.buttonPop(this.railRects.get(i));
 				this.switchPage(Page.values()[i]);
 				return true;
 			}
@@ -1449,6 +2228,7 @@ public class IndexScreen extends Screen {
 
 		for (int i = 0; i < this.chipRects.size(); i++) {
 			if (this.chipRects.get(i).contains(mouseX, mouseY)) {
+				Theme.buttonPop(this.chipRects.get(i));
 				this.category = this.chipOrder.get(i);
 				Theme.click();
 				this.scroll = 0.0F;
@@ -1468,6 +2248,13 @@ public class IndexScreen extends Screen {
 				}
 			} else {
 				this.detail = hit;
+				// Decode the whole gallery up front so flipping through it never stalls; the textures
+				// stay cached, so coming back to this post is instant too.
+				if (hit.imageUrls().isEmpty()) {
+					ImageStore.preload(hit.imageStart(), hit.imageCount());
+				} else {
+					ImageStore.preload(hit.imageUrls());
+				}
 				Theme.click(1.2F);
 				this.detailOpenedAt = System.currentTimeMillis();
 				this.detailImage = 0;
@@ -1477,6 +2264,9 @@ public class IndexScreen extends Screen {
 				this.detailZoom = 1.0F;
 				this.detailLayer = 1.0F;
 				this.followConfirm = false;
+				this.pendingOverwrite = null;
+				this.reportOpen = false;
+				this.reportContextOpen = false;
 				this.status = "";
 			}
 
@@ -1488,7 +2278,8 @@ public class IndexScreen extends Screen {
 
 	private void switchPage(Page target) {
 		if (target != this.page) {
-			Theme.click(1.1F);
+			// Tabs chime like amethyst so navigating feels different from pressing a button.
+			Theme.tab();
 		}
 
 		this.page = target;
@@ -1503,9 +2294,17 @@ public class IndexScreen extends Screen {
 	private boolean clickUpload(MouseButtonEvent event, boolean doubleClick, double mouseX, double mouseY) {
 		if (!UploaderAccess.unlocked()) {
 			if (this.unlockButton.contains(mouseX, mouseY)) {
-				String owner = UploaderAccess.redeem(this.codeBox.getValue());
-				this.formStatus = owner == null ? "That code is not valid." : "Unlocked as " + owner + ".";
+				// The code is checked against the server, so do it off-thread and report back.
+				String value = this.codeBox.getValue();
+				this.formStatus = "Checking code...";
 				this.setFocused(null);
+				Thread worker = new Thread(() -> {
+					String owner = UploaderAccess.redeem(value);
+					Minecraft.getInstance().execute(() ->
+							this.formStatus = owner == null ? "That code is not valid." : "Unlocked as " + owner + ".");
+				}, "schematicindex-code");
+				worker.setDaemon(true);
+				worker.start();
 				return true;
 			}
 
@@ -1573,6 +2372,12 @@ public class IndexScreen extends Screen {
 		} else if (this.overwriteToggle.contains(mouseX, mouseY)) {
 			Settings.toggleConfirmOverwrite();
 			Theme.click(1.1F);
+		} else if (this.toastsToggle.contains(mouseX, mouseY)) {
+			Settings.toggleToasts();
+			Theme.click(1.1F);
+		} else if (this.notificationsToggle.contains(mouseX, mouseY)) {
+			Settings.toggleNotifications();
+			Theme.click(1.1F);
 		} else if (this.changeFolderButton.contains(mouseX, mouseY)) {
 			Theme.click();
 			this.openDownloadPicker();
@@ -1582,6 +2387,24 @@ public class IndexScreen extends Screen {
 		} else if (this.resetFolderButton.contains(mouseX, mouseY)) {
 			Theme.click();
 			Settings.clearDownloadDirectory();
+		} else if (this.gridDensityButton.contains(mouseX, mouseY)) {
+			Theme.click();
+			Settings.cycleGridDensity();
+			// Recompute the grid so the new column count takes effect immediately.
+			this.columns = Math.max(2, Math.min(7, columnsFor(this.contentWidth) + Settings.gridDensity()));
+			this.cardWidth = (this.contentWidth - GUTTER * (this.columns - 1)) / this.columns;
+			this.cardHeight = imageHeight(this.cardWidth) + CAPTION_HEIGHT;
+			this.refilter();
+		} else if (this.clearCacheButton.contains(mouseX, mouseY)) {
+			Theme.click();
+			ImageStore.releaseAll();
+			ImageStore.clearDiskCache();
+			SchematicPreview.clearCache();
+			Toasts.push("Cache cleared", "Thumbnails and previews will reload as needed.",
+					new ItemStack(Items.BUCKET));
+		} else if (this.termsButton.contains(mouseX, mouseY)) {
+			Theme.click();
+			this.openTerms();
 		}
 
 		return true;
@@ -1619,24 +2442,61 @@ public class IndexScreen extends Screen {
 	}
 
 	private void setLayerFromMouse(double mouseX) {
-		if (this.layerSlider.width <= 0) {
+		if (this.layerSlider.width <= 0 || this.detail == null) {
 			return;
 		}
 
 		float fraction = (float) ((mouseX - this.layerSlider.x) / this.layerSlider.width);
-		this.detailLayer = Math.max(0.05F, Math.min(1.0F, fraction));
+		fraction = Math.max(0.0F, Math.min(1.0F, fraction));
+
+		// Snap to whole layers of the rendered model, floored at 1 so the bottom slice always renders.
+		int total = this.detailLayerHeight();
+		int layers = Math.max(1, Math.min(total, Math.round(fraction * total)));
+		this.detailLayer = (float) layers / total;
+	}
+
+	/** The Y height, in block layers, of the model currently in the 3D preview. */
+	private int detailLayerHeight() {
+		int height = this.detail == null ? -1 : SchematicPreview.layerHeight(this.detail.schematicSlot());
+		return height > 0 ? height : Math.max(1, this.detail == null ? 1 : this.detail.sizeY());
 	}
 
 	private void startDownload(SchematicEntry entry) {
-		Theme.click(1.2F);
-		Path source = SchematicPreview.pathFor(entry.schematicSlot());
+		// Ask before clobbering a file the player already has, when they have opted into the prompt. A
+		// download that already finished for this post re-runs freely - the button reads "Saved".
+		if (Settings.confirmOverwrite() && this.pendingOverwrite == null) {
+			Download.Progress progress = Download.progress(entry.id());
+			boolean alreadyDone = progress != null && progress.state() == Download.State.DONE;
 
-		if (source == null) {
-			this.status = "No local file to download in this beta.";
-			return;
+			if (!alreadyDone && Files.exists(Download.resolveTarget(entry.title() + ".litematic"))) {
+				this.pendingOverwrite = entry;
+				Theme.click(0.9F);
+				return;
+			}
 		}
 
-		Download.start(entry.id(), entry.title() + ".litematic", null, source);
+		this.beginDownload(entry);
+	}
+
+	private void beginDownload(SchematicEntry entry) {
+		Theme.click(1.2F);
+		String url = entry.fileUrl();
+
+		if (url != null && !url.isBlank()) {
+			Download.start(entry.id(), entry.title() + ".litematic", url, null);
+		} else {
+			// A locally-picked upload preview with no server URL: copy the file directly.
+			Path source = SchematicPreview.pathFor(entry.schematicSlot());
+
+			if (source == null) {
+				this.status = "No file to download.";
+				return;
+			}
+
+			Download.start(entry.id(), entry.title() + ".litematic", null, source);
+		}
+
+		Backend.downloadAsync(entry.id());
 		this.status = "Downloading into your schematics folder...";
 	}
 
@@ -1669,43 +2529,45 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
-		String designer = this.designerBox.getValue().trim();
-		String description = this.descriptionBox.getValue().trim();
-		String thumbnailName = this.thumbnailBox.getValue().trim();
-		int size = 12 + Math.abs(title.hashCode() % 30);
+		if (UploaderAccess.code() == null) {
+			this.formStatus = "Your session expired - unlock again.";
+			return;
+		}
 
-		SchematicEntry entry = new SchematicEntry(
-				MockCatalogue.nextPostId(),
-				title,
-				thumbnailName.isEmpty() ? title : thumbnailName,
-				String.valueOf(UploaderAccess.profile()),
-				designer.isEmpty() ? "unknown" : designer,
-				this.formCategory,
-				size, 8 + size / 3, size,
-				size * size * 2,
-				0,
-				0,
-				System.currentTimeMillis(),
-				description.isEmpty() ? "No description provided." : description,
-				this.formPictures.size(),
-				this.formPictureStart,
-				SchematicPreview.register(this.formSchematic),
-				false
-		);
+		JsonObject meta = new JsonObject();
+		meta.addProperty("title", title);
+		meta.addProperty("thumbnailName", this.thumbnailBox.getValue().trim());
+		meta.addProperty("designer", this.designerBox.getValue().trim());
+		meta.addProperty("category", this.formCategory.name());
+		meta.addProperty("description", this.descriptionBox.getValue().trim());
 
-		MockCatalogue.post(entry);
-		this.formPictures.clear();
-		this.formPictureStart = -1;
-		this.formPicturePreview = 0;
-		this.formSchematic = null;
-		this.titleBox.setValue("");
-		this.thumbnailBox.setValue("");
-		this.designerBox.setValue("");
-		this.descriptionBox.setValue("");
-		this.formStatus = "Posted \"" + title + "\" - beta only, it lives in memory until you quit.";
-		this.switchPage(Page.BROWSE);
-		this.formStatus = "";
-		this.status = "";
+		String code = UploaderAccess.code();
+		Path schematic = this.formSchematic;
+		List<Path> pictures = new ArrayList<>(this.formPictures);
+		this.formStatus = "Uploading...";
+
+		Thread worker = new Thread(() -> {
+			int status = Backend.upload(code, meta.toString(), schematic, pictures);
+			Minecraft.getInstance().execute(() -> {
+				if (status == 201) {
+					this.formPictures.clear();
+					this.formPictureStart = -1;
+					this.formPicturePreview = 0;
+					this.formSchematic = null;
+					this.titleBox.setValue("");
+					this.thumbnailBox.setValue("");
+					this.designerBox.setValue("");
+					this.descriptionBox.setValue("");
+					this.formStatus = "";
+					Catalogue.refresh();
+					this.switchPage(Page.BROWSE);
+				} else {
+					this.formStatus = "Upload failed (" + status + "). Check the file and try again.";
+				}
+			});
+		}, "schematicindex-upload");
+		worker.setDaemon(true);
+		worker.start();
 	}
 
 	/**
@@ -1788,10 +2650,13 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
-		if (this.detailClose.contains(mouseX, mouseY)) {
+		if (this.detailClose.contains(mouseX, mouseY) || this.detailCornerClose.contains(mouseX, mouseY)) {
 			Theme.click(0.9F);
 			this.detail = null;
 			this.followConfirm = false;
+			this.pendingOverwrite = null;
+			this.reportOpen = false;
+			this.reportContextOpen = false;
 			this.status = "";
 		} else if (this.detailHeart.contains(mouseX, mouseY)) {
 			toggleLike(entry);
@@ -1821,8 +2686,8 @@ public class IndexScreen extends Screen {
 		} else if (this.detailFollow.contains(mouseX, mouseY)) {
 			if (!Follows.isFollowing(entry.poster())) {
 				Follows.toggle(entry.poster());
-				Theme.click(1.3F);
-				Toasts.push("Followed " + entry.poster(), "You'll get a toast when they post.",
+				Theme.follow();
+				Toasts.push("Followed " + entry.poster(), "You'll be notified whenever someone you follow, posts",
 						new ItemStack(Items.PLAYER_HEAD));
 				this.followConfirm = false;
 			} else if (!this.followConfirm) {
@@ -1841,7 +2706,71 @@ public class IndexScreen extends Screen {
 			Theme.click(1.2F);
 			this.detailModel = !this.detailModel;
 			this.status = this.detailModel ? "Drag to orbit, scroll to zoom." : "";
+		} else if (this.detailReport.contains(mouseX, mouseY)) {
+			Theme.click(0.9F);
+			this.reportOpen = true;
 		}
+	}
+
+	private void clickReportPicker(double mouseX, double mouseY) {
+		for (int i = 0; i < this.reportReasonRects.length; i++) {
+			Rect rect = this.reportReasonRects[i];
+
+			if (rect != null && rect.contains(mouseX, mouseY)) {
+				// Move on to the context step so they can explain the report.
+				this.reportOpen = false;
+				this.reportContextOpen = true;
+				this.reportReasonIndex = i;
+				this.reportContext = "";
+				Theme.click(1.1F);
+				return;
+			}
+		}
+
+		if (this.reportCancel.contains(mouseX, mouseY)) {
+			this.reportOpen = false;
+			Theme.click(0.9F);
+		}
+	}
+
+	private void clickReportContext(double mouseX, double mouseY) {
+		if (this.reportSubmit.contains(mouseX, mouseY)) {
+			this.submitReport();
+		}
+		// Clicks elsewhere are swallowed; Esc backs out.
+	}
+
+	private void submitReport() {
+		SchematicEntry entry = this.detail;
+		String code = this.reportReasonIndex >= 0 && this.reportReasonIndex < REPORT_CODES.length
+				? REPORT_CODES[this.reportReasonIndex] : "OTHER";
+
+		if (entry != null) {
+			Backend.reportAsync(entry.id(), code, this.reportContext);
+		}
+
+		this.reportContextOpen = false;
+		this.reportReasonIndex = -1;
+		this.reportContext = "";
+		Theme.click(1.1F);
+		Toasts.push("Report submitted", "Thanks - we'll take a look.", new ItemStack(Items.PAPER));
+	}
+
+	private void clickOverwriteConfirm(double mouseX, double mouseY) {
+		SchematicEntry entry = this.pendingOverwrite;
+
+		if (this.overwriteReplace.contains(mouseX, mouseY)) {
+			this.pendingOverwrite = null;
+
+			if (entry != null) {
+				this.beginDownload(entry);
+			}
+		} else if (this.overwriteCancel.contains(mouseX, mouseY)) {
+			this.pendingOverwrite = null;
+			Theme.click(0.9F);
+			this.status = "";
+		}
+		// A click anywhere else on the scrim is swallowed: the card stays until it is answered.
 	}
 
 	private void resetCamera() {
@@ -1855,14 +2784,16 @@ public class IndexScreen extends Screen {
 	}
 
 	private static void toggleLike(SchematicEntry entry) {
-		if (LIKED.remove(entry.id())) {
+		boolean nowLiked = Bookmarks.toggleLike(entry.id());
+
+		if (nowLiked) {
+			LIKE_POPS.put(entry.id(), System.currentTimeMillis());
+			Theme.like();
+		} else {
 			Theme.click(0.9F);
-			return;
 		}
 
-		LIKED.add(entry.id());
-		LIKE_POPS.put(entry.id(), System.currentTimeMillis());
-		Theme.click(1.4F);
+		Backend.likeAsync(entry.id(), nowLiked);
 	}
 
 	private static long popAge(SchematicEntry entry) {
@@ -1907,7 +2838,7 @@ public class IndexScreen extends Screen {
 		}
 
 		int index = row * this.columns + column;
-		return index >= 0 && index < this.visible.size() ? this.visible.get(index) : null;
+		return index >= 0 && index < this.shownCap() ? this.visible.get(index) : null;
 	}
 
 	@Override
@@ -1939,13 +2870,39 @@ public class IndexScreen extends Screen {
 
 	/** Plays the press dip on whichever animated button a click landed on. */
 	private void registerButtonPress(double mouseX, double mouseY) {
-		Rect[] buttons = this.detail != null
-				? new Rect[]{this.detailClose, this.detailSave, this.detailFollow, this.detailDownload,
-						this.detailPreview3d, this.resetViewButton, this.cutawayToggle, this.freeLookToggle}
-				: new Rect[]{this.closeButton, this.sortButton, this.retryButton, this.unlockButton,
-						this.signOutButton, this.formCategoryButton, this.uploadPicturesButton,
-						this.uploadSchematicButton, this.postButton, this.changeFolderButton,
-						this.openFolderButton, this.resetFolderButton, this.soundsToggle, this.overwriteToggle};
+		Rect[] buttons;
+
+		if (this.tosOpen) {
+			buttons = this.tosScrolledBottom ? new Rect[]{this.tosAgree, this.tosDecline} : new Rect[0];
+		} else if (this.tutorialActive) {
+			buttons = new Rect[]{this.tutorialNext, this.tutorialBack, this.tutorialSkip};
+		} else if (this.pendingOverwrite != null) {
+			buttons = new Rect[]{this.overwriteReplace, this.overwriteCancel};
+		} else if (this.reportOpen) {
+			List<Rect> picker = new ArrayList<>();
+
+			for (Rect rect : this.reportReasonRects) {
+				if (rect != null) {
+					picker.add(rect);
+				}
+			}
+
+			picker.add(this.reportCancel);
+			buttons = picker.toArray(new Rect[0]);
+		} else if (this.reportContextOpen) {
+			buttons = new Rect[]{this.reportSubmit};
+		} else if (this.detail != null) {
+			buttons = new Rect[]{this.detailClose, this.detailCornerClose, this.detailReport, this.detailSave,
+					this.detailFollow, this.detailDownload, this.detailPreview3d, this.resetViewButton,
+					this.cutawayToggle, this.freeLookToggle};
+		} else {
+			buttons = new Rect[]{this.closeButton, this.sortButton, this.retryButton, this.unlockButton,
+					this.signOutButton, this.formCategoryButton, this.uploadPicturesButton,
+					this.uploadSchematicButton, this.postButton, this.changeFolderButton,
+					this.openFolderButton, this.resetFolderButton, this.soundsToggle, this.overwriteToggle,
+					this.toastsToggle, this.notificationsToggle, this.gridDensityButton, this.clearCacheButton,
+					this.termsButton};
+		}
 
 		for (Rect rect : buttons) {
 			if (rect.contains(mouseX, mouseY)) {
@@ -1957,6 +2914,15 @@ public class IndexScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+		if (this.tosOpen) {
+			this.tosScroll = Math.max(0.0F, Math.min(this.tosMaxScroll, this.tosScroll - (float) scrollY * SCROLL_STEP));
+			return true;
+		}
+
+		if (this.tutorialActive) {
+			return true;
+		}
+
 		if (this.detail != null) {
 			// Look-around mode is a fixed viewpoint: turning is allowed, moving is not.
 			if (this.detailModel && !this.freeLook && this.detailImageRect.contains(mouseX, mouseY)) {
@@ -1977,8 +2943,70 @@ public class IndexScreen extends Screen {
 	}
 
 	@Override
+	public boolean charTyped(CharacterEvent event) {
+		// The context box captures typing directly, up to the character limit.
+		if (this.reportContextOpen) {
+			if (event.codepoint() >= ' ' && this.reportContext.length() < REPORT_CONTEXT_MAX) {
+				this.reportContext += event.codepointAsString();
+			}
+
+			return true;
+		}
+
+		return super.charTyped(event);
+	}
+
+	@Override
 	public boolean keyPressed(KeyEvent event) {
+		// The terms gate swallows keys; Esc counts as declining, but only once it can be answered.
+		if (this.tosOpen) {
+			if (event.key() == 256 && this.tosScrolledBottom) {
+				Settings.revokeTerms();
+				this.onClose();
+			}
+
+			return true;
+		}
+
+		// During the tour, Esc skips it and other keys are swallowed.
+		if (this.tutorialActive) {
+			if (event.key() == 256) {
+				this.finishTutorial();
+			}
+
+			return true;
+		}
+
+		// Context box: backspace edits, Enter submits, Esc backs out to the detail modal.
+		if (this.reportContextOpen) {
+			switch (event.key()) {
+				case 259 -> {
+					if (!this.reportContext.isEmpty()) {
+						this.reportContext = this.reportContext.substring(0, this.reportContext.length() - 1);
+					}
+				}
+				case 257, 335 -> this.submitReport();
+				case 256 -> this.reportContextOpen = false;
+				default -> {
+				}
+			}
+
+			return true;
+		}
+
 		if (event.key() == 256 && this.detail != null) {
+			// Esc backs out of a prompt first, leaving the detail modal open.
+			if (this.pendingOverwrite != null) {
+				this.pendingOverwrite = null;
+				this.status = "";
+				return true;
+			}
+
+			if (this.reportOpen) {
+				this.reportOpen = false;
+				return true;
+			}
+
 			this.detail = null;
 			this.status = "";
 			return true;

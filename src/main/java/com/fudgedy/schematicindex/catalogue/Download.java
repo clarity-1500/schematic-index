@@ -48,6 +48,11 @@ public final class Download {
 		BY_POST.remove(postId);
 	}
 
+	/** Where a given file name would land, so callers can check for an existing file before starting. */
+	public static Path resolveTarget(String fileName) {
+		return Settings.downloadDirectory().resolve(safeName(fileName));
+	}
+
 	/**
 	 * @param url    the index's file URL, once there is a backend
 	 * @param source a local file, which is what the beta copies from

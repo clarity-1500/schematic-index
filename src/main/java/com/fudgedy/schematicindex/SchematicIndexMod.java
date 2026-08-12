@@ -10,6 +10,8 @@ public class SchematicIndexMod implements ClientModInitializer {
 
 	@Override
 	public void onInitializeClient() {
-		LOGGER.info("The Schematic Index loaded (offline layout preview - no backend configured)");
+		Settings.load();
+		LOGGER.info("The Schematic Index loaded (catalogue: {})",
+				Settings.hasApiBaseUrl() ? Settings.apiBaseUrl() : "not configured");
 	}
 }

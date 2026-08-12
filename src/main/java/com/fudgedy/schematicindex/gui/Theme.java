@@ -7,6 +7,7 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.resources.Identifier;
+import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 
 import java.util.IdentityHashMap;
@@ -216,13 +217,17 @@ public final class Theme {
 
 	private static final long HOVER_MS = 200L;
 	private static final long PRESS_MS = 150L;
+	private static final long POP_MS = 220L;
 	public static final float HOVER_SCALE = 0.02F;
 	public static final float PRESS_SCALE = 0.98F;
+	/** How far a selection pop overshoots 1 at its peak. */
+	public static final float POP_SCALE = 0.10F;
 
 	private static final class Fx {
 		float hover;
 		long lastUpdate;
 		long pressAt = -1L;
+		long popAt = -1L;
 	}
 
 	private static final Map<Object, Fx> BUTTON_FX = new IdentityHashMap<>();
@@ -275,6 +280,34 @@ public final class Theme {
 		return PRESS_SCALE + (base - PRESS_SCALE) * eased;
 	}
 
+	/** Records a selection pop on a button: a brief overshoot above 1 that springs back. */
+	public static void buttonPop(Object key) {
+		Fx fx = BUTTON_FX.computeIfAbsent(key, k -> new Fx());
+		fx.popAt = System.currentTimeMillis();
+	}
+
+	/**
+	 * Applies a selection pop on top of a base scale. A half-sine overshoot reads as a pop rather than
+	 * a wobble - up fast, settle back - the same shape the like heart uses.
+	 */
+	public static float popScale(Object key, float base) {
+		Fx fx = BUTTON_FX.get(key);
+
+		if (fx == null || fx.popAt < 0L) {
+			return base;
+		}
+
+		long age = System.currentTimeMillis() - fx.popAt;
+
+		if (age >= POP_MS) {
+			fx.popAt = -1L;
+			return base;
+		}
+
+		float t = age / (float) POP_MS;
+		return base + POP_SCALE * (float) Math.sin(t * Math.PI);
+	}
+
 	/** Pushes a scale-about-centre transform for a button of the given bounds. Pair with {@link #pop}. */
 	public static void pushScale(GuiGraphics ctx, int x, int y, int width, int height, float scale) {
 		float centreX = x + width / 2.0F;
@@ -301,20 +334,11 @@ public final class Theme {
 	}
 
 	/**
-	 * Shown when a post has no picture, or while one is loading. A blueprint grid over a wash of the
-	 * brand green, so an image-less card still looks deliberate instead of broken.
+	 * Shown when a post has no picture, or while one is loading. A quiet wash of the brand green, so an
+	 * image-less card still looks deliberate instead of broken.
 	 */
 	public static void blueprintPlaceholder(GuiGraphics ctx, int x, int y, int width, int height) {
 		ctx.fillGradient(x, y, x + width, y + height, 0xFF1B3A2F, BACKDROP);
-
-		for (int gx = 6; gx < width; gx += 6) {
-			ctx.fill(x + gx, y, x + gx + 1, y + height, gx % 24 == 0 ? 0x1A3FA87F : 0x0EFFFFFF);
-		}
-
-		for (int gy = 6; gy < height; gy += 6) {
-			ctx.fill(x, y + gy, x + width, y + gy + 1, gy % 24 == 0 ? 0x1A3FA87F : 0x0EFFFFFF);
-		}
-
 		ctx.fill(x, y, x + width, y + 1, 0x14FFFFFF);
 	}
 
@@ -353,6 +377,37 @@ public final class Theme {
 		}
 	}
 
+	/**
+	 * A report flag: a pole with a filled pennant. {@code size} is the pole height; the pennant fills
+	 * the upper half so it reads clearly as a flag even at small sizes.
+	 */
+	public static void flag(GuiGraphics ctx, int x, int y, int size, int color) {
+		int pole = Math.max(2, size / 12 + 1);
+		ctx.fill(x, y, x + pole, y + size, color);
+
+		int flagH = Math.max(3, size / 2);
+		int flagW = Math.max(3, size / 2 + 1);
+
+		for (int row = 0; row < flagH; row++) {
+			// A pennant that tapers to a point at the bottom.
+			int w = flagW - row * flagW / flagH;
+
+			if (w <= 0) {
+				break;
+			}
+
+			ctx.fill(x + pole, y + row, x + pole + w, y + row + 1, color);
+		}
+	}
+
+	/** A small X, drawn as two diagonals so it stays crisp at any GUI scale. {@code size} is the span. */
+	public static void cross(GuiGraphics ctx, int x, int y, int size, int color) {
+		for (int i = 0; i < size; i++) {
+			ctx.fill(x + i, y + i, x + i + 1, y + i + 1, color);
+			ctx.fill(x + i, y + size - 1 - i, x + i + 1, y + size - i, color);
+		}
+	}
+
 	/** Small download glyph - a stem over a wedge - so the count next to it reads as downloads. */
 	public static void downloadGlyph(GuiGraphics ctx, int x, int y, int color) {
 		ctx.fill(x + 2, y, x + 3, y + 2, color);
@@ -378,6 +433,47 @@ public final class Theme {
 
 	public static void click() {
 		click(1.0F);
+	}
+
+	/**
+	 * Plays any UI sound at a pitch and volume, so the menu can mix up its feedback instead of only
+	 * clicking. {@code forUI} defaults to a quiet 0.25 volume, so these pass a louder value explicitly.
+	 */
+	public static void sound(SoundEvent event, float pitch, float volume) {
+		if (!Settings.sounds()) {
+			return;
+		}
+
+		Minecraft client = Minecraft.getInstance();
+
+		if (client != null && client.getSoundManager() != null) {
+			client.getSoundManager().play(SimpleSoundInstance.forUI(event, pitch, volume));
+		}
+	}
+
+	/** Switching tabs sounds like mining an amethyst cluster, distinct from a plain button press. */
+	public static void tab() {
+		sound(SoundEvents.AMETHYST_CLUSTER_BREAK, 1.0F, 1.0F);
+	}
+
+	/** The full level-up chime when a download completes. */
+	public static void success() {
+		sound(SoundEvents.PLAYER_LEVELUP, 1.0F, 0.8F);
+	}
+
+	/** A villager's cry when a download fails - unmistakably "something went wrong". */
+	public static void failure() {
+		sound(SoundEvents.VILLAGER_HURT, 1.0F, 1.0F);
+	}
+
+	/** A bell when following a creator. */
+	public static void follow() {
+		sound(SoundEvents.NOTE_BLOCK_BELL.value(), 1.0F, 0.9F);
+	}
+
+	/** A harp note (F#) when liking a post. */
+	public static void like() {
+		sound(SoundEvents.NOTE_BLOCK_HARP.value(), 1.0F, 0.9F);
 	}
 
 	/**

@@ -1,10 +1,12 @@
 package com.fudgedy.schematicindex.gui;
 
 import com.fudgedy.schematicindex.SchematicIndexMod;
+import com.fudgedy.schematicindex.catalogue.Backend;
 import com.mojang.blaze3d.platform.NativeImage;
 import fi.dy.masa.litematica.schematic.LitematicaSchematic;
 import fi.dy.masa.litematica.schematic.container.LitematicaBlockStateContainer;
 import fi.dy.masa.litematica.util.FileType;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.core.BlockPos;
@@ -23,6 +25,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArraySet;
@@ -53,10 +56,22 @@ public final class SchematicPreview {
 	private static final int BACKGROUND = 0xFF10151A;
 	private static final double FIELD_OF_VIEW = 70.0D;
 
+	// Translucent water: the flat biome tint, an opacity that grows with the ray's path length through
+	// the water, and a cap so even deep water stays faintly see-through.
+	private static final int WATER_R = (BlockTextures.WATER_TINT >> 16) & 0xFF;
+	private static final int WATER_G = (BlockTextures.WATER_TINT >> 8) & 0xFF;
+	private static final int WATER_B = BlockTextures.WATER_TINT & 0xFF;
+	private static final double WATER_DENSITY = 0.55D;
+	private static final double WATER_MAX_A = 0.82D;
+
 	private static final List<Path> FILES = new ArrayList<>();
 	/** Files chosen through the upload form live in their own index space so they never shift. */
 	private static final int PICKED_BASE = 1_000_000;
 	private static final List<Path> PICKED = new ArrayList<>();
+	/** Catalogue posts: a slot per file URL, downloaded and cached the first time it is rendered. */
+	private static final int URL_BASE = 2_000_000;
+	private static final List<String> URLS = new ArrayList<>();
+	private static final List<Path> URL_FILES = new ArrayList<>();
 
 	private static final Map<Integer, Model> MODELS = new ConcurrentHashMap<>();
 	private static final Set<Integer> LOADING = new CopyOnWriteArraySet<>();
@@ -106,45 +121,20 @@ public final class SchematicPreview {
 	// ------------------------------------------------------------------ files
 
 	public static void discover() {
-		if (scanned) {
-			return;
-		}
-
+		// Local example schematics were removed with the move to the backend. The preview now renders
+		// the file a post links to (downloaded from the catalogue); only the upload form registers a
+		// local file, through register(). Kept as a no-op because the screen still calls it on open.
 		scanned = true;
-		Path directory = schematicDirectory();
-
-		if (directory == null || !Files.isDirectory(directory)) {
-			SchematicIndexMod.LOGGER.info("No schematic folder at {} - 3D preview will be unavailable", directory);
-			return;
-		}
-
-		try (Stream<Path> stream = Files.walk(directory, 2)) {
-			stream.filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".litematic"))
-					.sorted(Comparator.comparing(path -> path.getFileName().toString()))
-					.limit(64)
-					.forEach(FILES::add);
-		} catch (Exception e) {
-			SchematicIndexMod.LOGGER.warn("Could not list schematics in {}", directory, e);
-		}
-
-		SchematicIndexMod.LOGGER.info("Found {} schematics for 3D preview in {}", FILES.size(), directory);
-	}
-
-	private static @Nullable Path schematicDirectory() {
-		String override = System.getProperty("schematicindex.testschematics");
-
-		if (override != null && !override.isBlank()) {
-			return Path.of(override);
-		}
-
-		String appData = System.getenv("APPDATA");
-		return appData == null || appData.isBlank()
-				? null
-				: Path.of(appData, "ModrinthApp", "profiles", "Fabulously Optimized", "schematics");
 	}
 
 	public static int count() {
 		return FILES.size();
+	}
+
+	/** The built model's Y height in blocks (the number of layers), or -1 if it is not loaded yet. */
+	public static int layerHeight(int slot) {
+		Model model = MODELS.get(normalise(slot));
+		return model == null ? -1 : model.sizeY();
 	}
 
 	/**
@@ -157,7 +147,25 @@ public final class SchematicPreview {
 		return slot;
 	}
 
+	/** Registers a catalogue post's file URL and returns its preview slot (deduped by URL). */
+	public static synchronized int registerUrl(String url) {
+		int existing = URLS.indexOf(url);
+
+		if (existing >= 0) {
+			return URL_BASE + existing;
+		}
+
+		URLS.add(url);
+		URL_FILES.add(null);
+		return URL_BASE + URLS.size() - 1;
+	}
+
 	private static @Nullable Path fileFor(int slot) {
+		if (slot >= URL_BASE) {
+			int i = slot - URL_BASE;
+			return i >= 0 && i < URL_FILES.size() ? URL_FILES.get(i) : null;
+		}
+
 		if (slot >= PICKED_BASE) {
 			int picked = slot - PICKED_BASE;
 			return picked < PICKED.size() ? PICKED.get(picked) : null;
@@ -180,6 +188,13 @@ public final class SchematicPreview {
 	}
 
 	public static String name(int slot) {
+		if (slot >= URL_BASE) {
+			int i = slot - URL_BASE;
+			String url = i >= 0 && i < URLS.size() ? URLS.get(i) : "";
+			String file = url.substring(url.lastIndexOf('/') + 1);
+			return file.endsWith(".litematic") ? file.substring(0, file.length() - 10) : file;
+		}
+
 		Path source = fileFor(normalise(slot));
 
 		if (source == null) {
@@ -188,6 +203,43 @@ public final class SchematicPreview {
 
 		String file = source.getFileName().toString();
 		return file.endsWith(".litematic") ? file.substring(0, file.length() - 10) : file;
+	}
+
+	/** Resolves a slot to a local file, downloading and caching a catalogue URL the first time. */
+	private static @Nullable Path ensureLocal(int slot) {
+		if (slot < URL_BASE) {
+			return fileFor(slot);
+		}
+
+		int i = slot - URL_BASE;
+
+		if (i < 0 || i >= URLS.size()) {
+			return null;
+		}
+
+		Path cached = URL_FILES.get(i);
+
+		if (cached != null && Files.exists(cached)) {
+			return cached;
+		}
+
+		byte[] bytes = Backend.getBytes(URLS.get(i));
+
+		if (bytes == null) {
+			return null;
+		}
+
+		try {
+			Path dir = FabricLoader.getInstance().getGameDir().resolve(SchematicIndexMod.MOD_ID).resolve("schcache");
+			Files.createDirectories(dir);
+			Path file = dir.resolve(Integer.toHexString(URLS.get(i).hashCode()) + ".litematic");
+			Files.write(file, bytes);
+			URL_FILES.set(i, file);
+			return file;
+		} catch (Exception e) {
+			SchematicIndexMod.LOGGER.warn("Could not cache preview file", e);
+			return null;
+		}
 	}
 
 	/**
@@ -258,7 +310,7 @@ public final class SchematicPreview {
 
 		View wanted = new View(index, yaw, pitch, clampZoom(index, zoom), cutaway, freeLook,
 				from == null ? 0.0D : from[0], from == null ? 0.0D : from[1], from == null ? 0.0D : from[2],
-				Math.max(0.05F, Math.min(1.0F, maxLayer)));
+				Math.max(0.0F, Math.min(1.0F, maxLayer)));
 
 		if (wanted.equals(queued) || (!rendering && wanted.equals(shown))) {
 			return;
@@ -299,8 +351,9 @@ public final class SchematicPreview {
 			return;
 		}
 
-		Path file = fileFor(index);
-
+		// A catalogue post's file is fetched and cached first (off-thread); local picks are already on
+		// disk. Then the parse hops to the render thread and the model is built as before.
+		CompletableFuture.supplyAsync(() -> ensureLocal(index)).thenAccept(file -> {
 		if (file == null) {
 			LOADING.remove(index);
 			return;
@@ -353,6 +406,7 @@ public final class SchematicPreview {
 			} finally {
 				LOADING.remove(index);
 			}
+		});
 		});
 	}
 
@@ -524,6 +578,9 @@ public final class SchematicPreview {
 		double upZ = sinPitch * cosYaw;
 
 		double scale = model.fitScale() * view.zoom();
+		// Pick a mip level from how many screen pixels a block spans: fewer pixels per block means each
+		// pixel covers more texels, so a coarser (pre-averaged) level avoids the grain of point-sampling.
+		int lod = lodFor(scale);
 		// Zoom doubles as a dolly: the closer the camera gets, the more of the near geometry falls
 		// behind it, until it is inside the build looking out.
 		double distance = model.radius() * 2.0D / Math.max(0.05D, view.zoom());
@@ -567,7 +624,7 @@ public final class SchematicPreview {
 					double length = Math.sqrt(rayX * rayX + rayY * rayY + rayZ * rayZ);
 
 					image.setPixel(px, py, trace(model, view.eyeX(), view.eyeY(), view.eyeZ(),
-							rayX / length, rayY / length, rayZ / length, planeDistance, layerCeiling, hit));
+							rayX / length, rayY / length, rayZ / length, planeDistance, layerCeiling, lod, hit));
 				}
 			}
 
@@ -584,8 +641,8 @@ public final class SchematicPreview {
 				double originY = centreY + upY * screenY - dirY * distance;
 				double originZ = centreZ + rightZ * screenX + upZ * screenY - dirZ * distance;
 
-				image.setPixel(px, py,
-						trace(model, originX, originY, originZ, dirX, dirY, dirZ, planeDistance, layerCeiling, hit));
+				image.setPixel(px, py, trace(model, originX, originY, originZ, dirX, dirY, dirZ,
+						planeDistance, layerCeiling, lod, hit));
 			}
 		}
 
@@ -598,7 +655,17 @@ public final class SchematicPreview {
 	 *                      it are culled whole so zooming in reveals the interior cleanly
 	 */
 	private static int trace(Model model, double originX, double originY, double originZ,
-			double dirX, double dirY, double dirZ, double planeDistance, int layerCeiling, ShapeTracer.Hit hit) {
+			double dirX, double dirY, double dirZ, double planeDistance, int layerCeiling, int lod,
+			ShapeTracer.Hit hit) {
+		// Front-to-back alpha compositing for water: the ray keeps a running colour and transmittance,
+		// laying a translucent blue layer over each water voxel it crosses before it lands on something
+		// opaque. accR/G/B are premultiplied (already scaled by the transmittance in front of them).
+		double accR = 0.0D;
+		double accG = 0.0D;
+		double accB = 0.0D;
+		double trans = 1.0D;
+		boolean firstWater = true;
+
 		double near = 0.0D;
 		double far = Double.MAX_VALUE;
 		int entryAxis = -1;
@@ -610,7 +677,7 @@ public final class SchematicPreview {
 		for (int axis = 0; axis < 3; axis++) {
 			if (Math.abs(directions[axis]) < 1.0E-9D) {
 				if (origins[axis] < 0.0D || origins[axis] > bounds[axis]) {
-					return BACKGROUND;
+					return composite(accR, accG, accB, trans, BACKGROUND);
 				}
 
 				continue;
@@ -634,7 +701,7 @@ public final class SchematicPreview {
 		}
 
 		if (near > far || far < 0.0D) {
-			return BACKGROUND;
+			return composite(accR, accG, accB, trans, BACKGROUND);
 		}
 
 		double travelled = Math.max(near, 0.0D) + 1.0E-4D;
@@ -694,18 +761,50 @@ public final class SchematicPreview {
 					shape = null;
 				}
 
-				if (shape != null && shape.fullCube()) {
-					double hitX = originX + dirX * travelled;
-					double hitY = originY + dirY * travelled;
-					double hitZ = originZ + dirZ * travelled;
-					return shade(shape.faces(), face, hitX, hitY, hitZ);
+				if (shape != null && shape.waterVolume()) {
+					// A water fluid: add a layer sized by how far the ray travels through this voxel,
+					// then carry on so whatever is behind shows through the tint.
+					double exit = Math.min(nextX, Math.min(nextY, nextZ));
+					double added = addWater(exit - travelled, firstWater);
+					accR += trans * added * WATER_R;
+					accG += trans * added * WATER_G;
+					accB += trans * added * WATER_B;
+					trans *= 1.0D - added;
+					firstWater = false;
+
+					// Once the water is effectively opaque there is no point tracing further.
+					if (trans < 0.02D) {
+						return composite(accR, accG, accB, trans, BACKGROUND);
+					}
+
+					shape = null;
 				}
 
-				// Real model geometry: the ray may pass straight through the gaps around a torch or
-				// under a slab, so a miss here just carries on to the next voxel.
-				if (shape != null
-						&& ShapeTracer.trace(shape, originX - x, originY - y, originZ - z, dirX, dirY, dirZ, hit)) {
-					return light(hit.color, hit.face);
+				if (shape != null) {
+					// Waterlogged geometry sits in water: lay a thinner layer over the voxel (the block
+					// displaces some of it) before shading whatever the ray strikes inside.
+					if (shape.waterlogged()) {
+						double exit = Math.min(nextX, Math.min(nextY, nextZ));
+						double added = addWater((exit - travelled) * 0.6D, firstWater);
+						accR += trans * added * WATER_R;
+						accG += trans * added * WATER_G;
+						accB += trans * added * WATER_B;
+						trans *= 1.0D - added;
+						firstWater = false;
+					}
+
+					if (shape.fullCube()) {
+						double hitX = originX + dirX * travelled;
+						double hitY = originY + dirY * travelled;
+						double hitZ = originZ + dirZ * travelled;
+						return composite(accR, accG, accB, trans, shade(shape.faces(), face, hitX, hitY, hitZ, lod));
+					}
+
+					// Real model geometry: the ray may pass straight through the gaps around a torch or
+					// under a slab, so a miss here just carries on to the next voxel.
+					if (ShapeTracer.trace(shape, originX - x, originY - y, originZ - z, dirX, dirY, dirZ, lod, hit)) {
+						return composite(accR, accG, accB, trans, light(hit.color, hit.face));
+					}
 				}
 			}
 
@@ -716,7 +815,7 @@ public final class SchematicPreview {
 				face = stepX > 0 ? Face.WEST : Face.EAST;
 
 				if (x < 0 || x >= model.sizeX()) {
-					return BACKGROUND;
+					return composite(accR, accG, accB, trans, BACKGROUND);
 				}
 			} else if (nextY < nextZ) {
 				travelled = nextY;
@@ -725,7 +824,7 @@ public final class SchematicPreview {
 				face = stepY > 0 ? Face.DOWN : Face.UP;
 
 				if (y < 0 || y >= model.sizeY()) {
-					return BACKGROUND;
+					return composite(accR, accG, accB, trans, BACKGROUND);
 				}
 			} else {
 				travelled = nextZ;
@@ -734,12 +833,12 @@ public final class SchematicPreview {
 				face = stepZ > 0 ? Face.NORTH : Face.SOUTH;
 
 				if (z < 0 || z >= model.sizeZ()) {
-					return BACKGROUND;
+					return composite(accR, accG, accB, trans, BACKGROUND);
 				}
 			}
 		}
 
-		return BACKGROUND;
+		return composite(accR, accG, accB, trans, BACKGROUND);
 	}
 
 	/** Direction ordinals, matching {@code net.minecraft.core.Direction}. */
@@ -781,7 +880,7 @@ public final class SchematicPreview {
 	 * Samples the block's texture where the ray landed, then lights it from a fixed world-space
 	 * direction so a face keeps its brightness as the model spins.
 	 */
-	private static int shade(BlockTextures.Faces faces, int face, double hitX, double hitY, double hitZ) {
+	private static int shade(BlockTextures.Faces faces, int face, double hitX, double hitY, double hitZ, int lod) {
 		double u;
 		double v;
 
@@ -800,7 +899,24 @@ public final class SchematicPreview {
 			}
 		}
 
-		return light(faces.sample(face, u, v), face);
+		return light(faces.sample(face, u, v, lod), face);
+	}
+
+	private static final double LOG2 = Math.log(2.0D);
+
+	/**
+	 * The mip level for a given on-screen block size. A block spanning {@code pixelsPerBlock} pixels
+	 * covers {@code 16 / pixelsPerBlock} texels of a 16px sprite per pixel; the base-2 log of that is
+	 * how many times to halve the texture so one texel maps to roughly one pixel.
+	 */
+	private static int lodFor(double pixelsPerBlock) {
+		double texelsPerPixel = 16.0D / Math.max(1.0D, pixelsPerBlock);
+
+		if (texelsPerPixel <= 1.0D) {
+			return 0;
+		}
+
+		return Math.max(0, Math.min(4, (int) Math.round(Math.log(texelsPerPixel) / LOG2)));
 	}
 
 	/** Vanilla's directional face shading, so shape stays readable without a light source. */
@@ -817,6 +933,29 @@ public final class SchematicPreview {
 		int red = (int) Math.min(255.0D, ((color >> 16) & 0xFF) * brightness);
 		int green = (int) Math.min(255.0D, ((color >> 8) & 0xFF) * brightness);
 		int blue = (int) Math.min(255.0D, (color & 0xFF) * brightness);
+		return 0xFF000000 | (red << 16) | (green << 8) | blue;
+	}
+
+	/**
+	 * Opacity a water segment of the given thickness (in blocks) adds. Linear in thickness - cheaper
+	 * than a real exponential and indistinguishable at these depths. The first segment along a ray is
+	 * lifted a touch so the top of a body of water reads as a distinct surface.
+	 */
+	private static double addWater(double thickness, boolean surface) {
+		double a = Math.min(WATER_MAX_A, Math.max(0.0D, thickness) * WATER_DENSITY);
+		return surface ? Math.min(WATER_MAX_A, a + 0.1D) : a;
+	}
+
+	/** Lays the accumulated (premultiplied) water colour over an opaque or background colour. */
+	private static int composite(double accR, double accG, double accB, double trans, int color) {
+		// The common case: no water was crossed, so the hit colour passes through untouched.
+		if (trans >= 0.999D) {
+			return color;
+		}
+
+		int red = (int) Math.min(255.0D, accR + trans * ((color >> 16) & 0xFF));
+		int green = (int) Math.min(255.0D, accG + trans * ((color >> 8) & 0xFF));
+		int blue = (int) Math.min(255.0D, accB + trans * (color & 0xFF));
 		return 0xFF000000 | (red << 16) | (green << 8) | blue;
 	}
 
@@ -867,6 +1006,13 @@ public final class SchematicPreview {
 		}
 
 		return shown.slot() == normalise(slot) ? viewId : null;
+	}
+
+	/** Drops the built voxel models and the sprite-pixel cache, so a Clear cache frees their memory. */
+	public static void clearCache() {
+		MODELS.clear();
+		LOADING.clear();
+		BlockTextures.clear();
 	}
 
 	public static void releaseAll() {

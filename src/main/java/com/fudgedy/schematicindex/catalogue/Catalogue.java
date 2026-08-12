@@ -1,23 +1,19 @@
 package com.fudgedy.schematicindex.catalogue;
 
 import com.fudgedy.schematicindex.SchematicIndexMod;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * Tracks whether the catalogue is reachable.
+ * The catalogue of posts, fetched from the backend.
  *
- * <p>There is no index server yet, so by default the mod runs on {@link MockCatalogue} and reports
- * itself ready. Point {@code -Dschematicindex.index=<url>} at something and it will actually probe
- * that address on a worker thread, which is how the offline state can be seen (and tested - aim it
- * at a URL that does not resolve).
- *
- * <p>The GUI only ever reads {@link #state()}, so swapping this for the real fetch later does not
- * touch the screen code.
+ * <p>On open (or refresh) it pulls every visible post, page by page, on a worker thread and holds the
+ * result. The GUI reads {@link #state()} for the loading/offline chrome and {@link #posts()} for the
+ * grid, which then does its own category/search/sort client-side. With no server address configured
+ * the state is simply {@link State#OFFLINE}.
  */
 public final class Catalogue {
 	public enum State {
@@ -26,8 +22,31 @@ public final class Catalogue {
 		OFFLINE
 	}
 
+	/** Sort order for the grid. Applied client-side over {@link #posts()}. */
+	public enum Sort {
+		NEWEST("Newest"),
+		DOWNLOADS("Most downloaded"),
+		LIKES("Most liked");
+
+		private final String label;
+
+		Sort(String label) {
+			this.label = label;
+		}
+
+		public String label() {
+			return this.label;
+		}
+
+		public Sort next() {
+			Sort[] all = values();
+			return all[(this.ordinal() + 1) % all.length];
+		}
+	}
+
 	private static volatile State state = State.LOADING;
 	private static volatile boolean started;
+	private static volatile List<SchematicEntry> posts = List.of();
 
 	private Catalogue() {
 	}
@@ -36,7 +55,11 @@ public final class Catalogue {
 		return state;
 	}
 
-	/** Kicks off a connection check the first time the library is opened. */
+	public static List<SchematicEntry> posts() {
+		return posts;
+	}
+
+	/** Kicks off the first fetch when the library is opened. */
 	public static void ensureLoaded() {
 		if (started) {
 			return;
@@ -47,31 +70,56 @@ public final class Catalogue {
 	}
 
 	public static void refresh() {
-		String index = System.getProperty("schematicindex.index");
 		state = State.LOADING;
 
-		if (index == null || index.isBlank()) {
-			// No backend configured: the mock catalogue is the source, and it is always available.
-			state = State.READY;
+		if (!Backend.configured()) {
+			posts = List.of();
+			state = State.OFFLINE;
 			return;
 		}
 
 		Thread worker = new Thread(() -> {
-			try (HttpClient client = HttpClient.newBuilder()
-					.connectTimeout(Duration.ofSeconds(4))
-					.build()) {
-				HttpRequest request = HttpRequest.newBuilder(URI.create(index))
-						.timeout(Duration.ofSeconds(6))
-						.method("HEAD", HttpRequest.BodyPublishers.noBody())
-						.build();
-				HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
-				state = response.statusCode() < 400 ? State.READY : State.OFFLINE;
+			try {
+				posts = fetchAll();
+				NewsFeed.refresh();
+				state = State.READY;
 			} catch (Throwable e) {
-				SchematicIndexMod.LOGGER.info("Catalogue unreachable at {}: {}", index, e.toString());
+				SchematicIndexMod.LOGGER.info("Catalogue fetch failed: {}", e.toString());
 				state = State.OFFLINE;
 			}
-		}, "schematicindex-connect");
+		}, "schematicindex-catalogue");
 		worker.setDaemon(true);
 		worker.start();
+	}
+
+	private static List<SchematicEntry> fetchAll() {
+		List<SchematicEntry> all = new ArrayList<>();
+		String cursor = null;
+
+		// Page through the whole catalogue, capped so a broken server can never loop forever.
+		for (int page = 0; page < 40; page++) {
+			String path = "/index?limit=60" + (cursor == null ? "" : "&cursor=" + Backend.encode(cursor));
+			JsonObject body = Backend.getJson(path);
+
+			if (body == null) {
+				if (page == 0) {
+					throw new IllegalStateException("index unreachable");
+				}
+
+				break;
+			}
+
+			for (JsonElement element : body.getAsJsonArray("posts")) {
+				all.add(Backend.parsePost(element.getAsJsonObject()));
+			}
+
+			if (body.has("nextCursor") && !body.get("nextCursor").isJsonNull()) {
+				cursor = body.get("nextCursor").getAsString();
+			} else {
+				break;
+			}
+		}
+
+		return all;
 	}
 }

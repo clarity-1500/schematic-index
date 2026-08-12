@@ -1,28 +1,16 @@
 package com.fudgedy.schematicindex.gui;
 
+import com.fudgedy.schematicindex.catalogue.Backend;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Locale;
-import java.util.Map;
-
 /**
- * Beta stand-in for uploader access.
- *
- * <p>The real flow is: the owner generates a code, assigns it to a profile, and hands it out. The
- * uploader redeems it once and the server issues a session. Codes are stored hashed, checked
- * server-side, rate limited, and revocable - none of which can happen client-side.
- *
- * <p>So this class is deliberately a stub: the codes below live in the jar and anyone can read them.
- * That is fine for a local beta and must not survive contact with a backend.
+ * Uploader access. A code is validated against the server ({@code GET /uploader}); on success the
+ * display name it belongs to is kept for the session, and the code itself is held so uploads can send
+ * it as the {@code X-Upload-Code} header. Revoking a code server-side takes effect on the next check.
  */
 public final class UploaderAccess {
-	private static final Map<String, String> BETA_CODES = Map.of(
-			"INDEX-BETA-0001", "Fudgedy",
-			"INDEX-BETA-0002", "SableCo",
-			"INDEX-BETA-0003", "hexbuild"
-	);
-
 	private static @Nullable String profile;
+	private static @Nullable String code;
 
 	private UploaderAccess() {
 	}
@@ -35,13 +23,24 @@ public final class UploaderAccess {
 		return profile;
 	}
 
-	/** @return the profile the code belongs to, or null if the code is not valid */
-	public static @Nullable String redeem(String code) {
-		String cleaned = code.trim().toUpperCase(Locale.ROOT);
-		String owner = BETA_CODES.get(cleaned);
+	/** The redeemed code, for the upload header. */
+	public static @Nullable String code() {
+		return code;
+	}
+
+	/**
+	 * Validates a code against the server and, if good, unlocks uploading. Blocking - call off the
+	 * render thread.
+	 *
+	 * @return the display name the code belongs to, or null if it is not valid
+	 */
+	public static @Nullable String redeem(String raw) {
+		String cleaned = raw.trim();
+		String owner = Backend.checkCode(cleaned);
 
 		if (owner != null) {
 			profile = owner;
+			code = cleaned;
 		}
 
 		return owner;
@@ -49,9 +48,10 @@ public final class UploaderAccess {
 
 	public static void signOut() {
 		profile = null;
+		code = null;
 	}
 
 	public static String betaHint() {
-		return "Beta codes: INDEX-BETA-0001 / 0002 / 0003";
+		return "Ask an existing uploader for an access code.";
 	}
 }

@@ -23,6 +23,19 @@ public enum Category {
 		return this.label;
 	}
 
+	/** Maps a server category code (e.g. "FARMS") to the enum, falling back to {@link #ALL}. */
+	public static Category fromName(String name) {
+		if (name != null) {
+			for (Category value : values()) {
+				if (value.name().equalsIgnoreCase(name)) {
+					return value;
+				}
+			}
+		}
+
+		return ALL;
+	}
+
 	/** Everything except {@link #ALL}, which is the filter-off state rather than a real tag. */
 	public static Category[] tags() {
 		Category[] all = values();

@@ -1,0 +1,151 @@
+import crypto from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { db } from './db.js';
+import { config } from './config.js';
+
+const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+
+/** Owner-only guard: a constant-time check of the X-Owner-Key header against OWNER_KEY. */
+function requireOwner(req, res, next) {
+  if (!config.ownerKey) {
+    return res.status(503).json({ error: 'no_owner_key', message: 'Server has no OWNER_KEY set.' });
+  }
+
+  const provided = Buffer.from(req.get('X-Owner-Key') || '');
+  const expected = Buffer.from(config.ownerKey);
+
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+    return res.status(403).json({ error: 'forbidden', message: 'Bad owner key.' });
+  }
+
+  next();
+}
+
+export function registerAdminRoutes(app) {
+  const owner = requireOwner;
+
+  // The admin single-page app. Auth happens per API call via the owner key, so the shell is public.
+  app.get('/admin', (req, res) => res.sendFile(path.join(publicDir, 'admin.html')));
+
+  // Lets the admin site verify the key on login.
+  app.get('/admin/api/session', owner, (req, res) => res.json({ ok: true }));
+
+  // ---- Posts ------------------------------------------------------------
+  app.get('/admin/api/posts', owner, (req, res) => {
+    const rows = db.prepare('SELECT * FROM posts ORDER BY posted_at DESC LIMIT 500').all();
+    res.json({
+      posts: rows.map((r) => ({
+        id: r.id, title: r.title, poster: r.poster, category: r.category,
+        likes: r.likes, downloads: r.downloads, visibility: r.visibility,
+        reportCount: r.report_count, postedAt: r.posted_at,
+      })),
+    });
+  });
+
+  app.delete('/admin/api/posts/:id', owner, (req, res) => {
+    const info = db.prepare("UPDATE posts SET visibility = 'deleted' WHERE id = ?").run(req.params.id);
+    res.json({ ok: true, changed: info.changes });
+  });
+
+  app.post('/admin/api/posts/:id/restore', owner, (req, res) => {
+    db.prepare("UPDATE posts SET visibility = 'visible' WHERE id = ?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // ---- News -------------------------------------------------------------
+  app.get('/admin/api/news', owner, (req, res) => {
+    const rows = db.prepare('SELECT * FROM news ORDER BY posted_at DESC').all();
+    res.json({
+      news: rows.map((r) => ({
+        id: r.id, badge: r.badge, title: r.title, dateText: r.date_text,
+        body: r.body, highlight: !!r.highlight, postedAt: r.posted_at,
+      })),
+    });
+  });
+
+  app.post('/admin/api/news', owner, (req, res) => {
+    const badge = String(req.body?.badge || '').trim();
+    const title = String(req.body?.title || '').trim();
+    const body = String(req.body?.body || '').trim();
+    const dateText = String(req.body?.dateText || '').trim() || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const highlight = req.body?.highlight ? 1 : 0;
+
+    if (!badge || !title || !body) {
+      return res.status(400).json({ error: 'missing_fields', message: 'badge, title and body are required.' });
+    }
+
+    // Only the newest entry should carry the accent badge.
+    if (highlight) {
+      db.prepare('UPDATE news SET highlight = 0').run();
+    }
+
+    const info = db.prepare(
+      'INSERT INTO news (badge, title, date_text, body, highlight, posted_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(badge, title, dateText, body, highlight, Date.now());
+
+    res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+  });
+
+  app.delete('/admin/api/news/:id', owner, (req, res) => {
+    db.prepare('DELETE FROM news WHERE id = ?').run(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ---- Reports ----------------------------------------------------------
+  app.get('/admin/api/reports', owner, (req, res) => {
+    const rows = db.prepare(`
+      SELECT r.*, p.title AS post_title, p.poster AS post_poster, p.uploader_code_id AS code_id
+      FROM reports r LEFT JOIN posts p ON p.id = r.post_id
+      WHERE r.status = 'open' ORDER BY r.created_at DESC LIMIT 200
+    `).all();
+    res.json({
+      reports: rows.map((r) => ({
+        id: r.id, postId: r.post_id, postTitle: r.post_title, poster: r.post_poster,
+        reason: r.reason, note: r.note, createdAt: r.created_at, codeId: r.code_id,
+      })),
+    });
+  });
+
+  app.post('/admin/api/reports/:id/dismiss', owner, (req, res) => {
+    db.prepare("UPDATE reports SET status = 'dismissed' WHERE id = ?").run(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ---- Upload codes -----------------------------------------------------
+  app.get('/admin/api/codes', owner, (req, res) => {
+    const rows = db.prepare('SELECT * FROM codes ORDER BY created_at DESC').all();
+    res.json({
+      codes: rows.map((r) => ({
+        id: r.id, code: r.code, displayName: r.display_name, revoked: !!r.revoked, createdAt: r.created_at,
+      })),
+    });
+  });
+
+  app.post('/admin/api/codes', owner, (req, res) => {
+    const displayName = String(req.body?.displayName || '').trim();
+
+    if (!displayName) {
+      return res.status(400).json({ error: 'no_name', message: 'A display name is required.' });
+    }
+
+    const code = crypto.randomBytes(6).toString('hex').toUpperCase();
+    db.prepare('INSERT INTO codes (code, display_name, revoked, created_at) VALUES (?, ?, 0, ?)')
+      .run(code, displayName, Date.now());
+    res.status(201).json({ ok: true, code, displayName });
+  });
+
+  app.post('/admin/api/codes/:code/revoke', owner, (req, res) => {
+    const code = req.params.code;
+    db.prepare('UPDATE codes SET revoked = 1 WHERE code = ?').run(code);
+
+    if (req.body?.deletePosts) {
+      const row = db.prepare('SELECT id FROM codes WHERE code = ?').get(code);
+      if (row) {
+        db.prepare("UPDATE posts SET visibility = 'deleted' WHERE uploader_code_id = ?").run(row.id);
+      }
+    }
+
+    res.json({ ok: true });
+  });
+}

@@ -11,10 +11,19 @@ import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.Identifier;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.EmptyBlockGetter;
+import net.minecraft.world.level.block.AbstractBannerBlock;
+import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.DecoratedPotBlock;
+import net.minecraft.world.level.block.ShulkerBoxBlock;
+import net.minecraft.world.level.block.SignBlock;
+import net.minecraft.world.level.block.WallSignBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.shapes.VoxelShape;
@@ -39,10 +48,14 @@ public final class BlockShapes {
 	/**
 	 * Model geometry straight off the render thread, before textures are resolved.
 	 *
-	 * @param cube render as a solid block even though there are no quads - fluids have no block
-	 *             model and no outline shape, so without this they vanish entirely
+	 * @param cube        render as a solid block even though there are no quads - fluids have no block
+	 *                    model and no outline shape, so without this they vanish entirely
+	 * @param water       a water fluid: the raycaster composites it as a translucent volume rather
+	 *                    than shading it as an opaque cube. Lava keeps {@code cube} but not this.
+	 * @param waterlogged real geometry that also sits in water (submerged stairs, slabs, fences); the
+	 *                    raycaster lays a water layer over whatever the ray hits inside the voxel
 	 */
-	public record Raw(List<RawQuad> quads, boolean cube) {
+	public record Raw(List<RawQuad> quads, boolean cube, boolean water, boolean waterlogged) {
 	}
 
 	public record RawQuad(float[] xs, float[] ys, float[] zs, float[] us, float[] vs,
@@ -76,15 +89,30 @@ public final class BlockShapes {
 		final boolean fullCube;
 		final Quad[] quads;
 		final BlockTextures.Faces faces;
+		final boolean waterVolume;
+		final boolean waterlogged;
 
-		Shape(boolean fullCube, @Nullable Quad[] quads, BlockTextures.Faces faces) {
+		Shape(boolean fullCube, @Nullable Quad[] quads, BlockTextures.Faces faces,
+				boolean waterVolume, boolean waterlogged) {
 			this.fullCube = fullCube;
 			this.quads = quads;
 			this.faces = faces;
+			this.waterVolume = waterVolume;
+			this.waterlogged = waterlogged;
 		}
 
 		public boolean fullCube() {
 			return this.fullCube;
+		}
+
+		/** A water fluid: composited as a translucent volume instead of an opaque cube. */
+		public boolean waterVolume() {
+			return this.waterVolume;
+		}
+
+		/** Real geometry submerged in water: the ray tints whatever it hits inside the voxel blue. */
+		public boolean waterlogged() {
+			return this.waterlogged;
 		}
 
 		/** Nothing to draw at all - the model was empty and the block has no outline either. */
@@ -122,45 +150,35 @@ public final class BlockShapes {
 			if (quads.isEmpty()) {
 				// Fluids have neither a block model nor an outline shape - the fluid renderer draws
 				// them in game - so they need to be claimed as solid blocks before the outline path
-				// discards them as invisible.
+				// discards them as invisible. Water is composited translucently downstream; lava is
+				// just an opaque cube, so only water carries the flag.
 				if (!state.getFluidState().isEmpty()) {
-					return new Raw(quads, true);
+					boolean water = state.getFluidState().is(FluidTags.WATER);
+					return new Raw(quads, true, water, false);
 				}
 
-				// Signs, chests, beds and banners have empty models too, but they do have an outline.
-				// Falling back to a full cube made a sign look like a block of wood, so build boxes
-				// from that outline instead and skin them with the right texture.
-				fromOutline(quads, state, model.particleIcon().contents().name());
-			}
+				// Signs and banners have no collision outline at all, so build a representative shape
+				// for them by hand. Chests, shulkers, beds and the like do have an outline: build
+				// boxes from it and skin them with the right entity texture.
+				if (synthesize(quads, state)) {
+					return new Raw(quads, false, false, isWaterlogged(state));
+				}
 
-			// Waterlogged stairs, slabs, fences and the like sit in water in game. This raycaster has
-			// no translucency - the nearest opaque surface wins - so a real water volume would just
-			// occlude the block as a solid blue cube. Instead the block's own faces get a blue wash,
-			// which reads as "submerged" without hiding the geometry.
-			if (isWaterlogged(state)) {
-				washBlue(quads);
+				fromOutline(quads, state, model.particleIcon().contents().name());
 			}
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.debug("No model geometry for {}", state, e);
 		}
 
-		return new Raw(quads, false);
+		// Waterlogged stairs, slabs, fences and the like sit in water in game. Rather than washing the
+		// block blue, the flag tells the raycaster to lay a translucent water layer over whatever the
+		// ray hits inside the voxel, so the block keeps its real texture and reads as submerged.
+		return new Raw(quads, false, false, isWaterlogged(state));
 	}
 
 	private static boolean isWaterlogged(BlockState state) {
 		return state.hasProperty(BlockStateProperties.WATERLOGGED)
 				&& state.getValue(BlockStateProperties.WATERLOGGED);
-	}
-
-	/** A light blue tint over every quad, so a waterlogged block reads as submerged. */
-	private static final int WATER_WASH = 0xFFA6C6E6;
-
-	private static void washBlue(List<RawQuad> quads) {
-		for (int i = 0; i < quads.size(); i++) {
-			RawQuad quad = quads.get(i);
-			quads.set(i, new RawQuad(quad.xs(), quad.ys(), quad.zs(), quad.us(), quad.vs(),
-					quad.texture(), quad.face(), BlockTextures.tint(quad.tint(), WATER_WASH)));
-		}
 	}
 
 	private static void collect(List<RawQuad> out, List<BakedQuad> quads, BlockState state) {
@@ -201,8 +219,22 @@ public final class BlockShapes {
 	private record Skin(Identifier texture, float[] top, float[] side) {
 	}
 
+	// Regions are [u0, v0, u1, v1] in 0..1 texture space. The chest and shulker sheets are 64x64; the
+	// bed sheet is 64x64. Each picks out the part of the entity unwrap worth showing on a box: a
+	// horizontal face and a vertical one.
 	private static final float[] CHEST_TOP = {28.0F / 64.0F, 0.0F, 42.0F / 64.0F, 14.0F / 64.0F};
 	private static final float[] CHEST_SIDE = {14.0F / 64.0F, 33.0F / 64.0F, 28.0F / 64.0F, 43.0F / 64.0F};
+	// Shulker lid box (texOffs 0,0, size 16x12x16): the top face and the front panel with the "face".
+	private static final float[] SHULKER_TOP = {16.0F / 64.0F, 0.0F, 32.0F / 64.0F, 16.0F / 64.0F};
+	private static final float[] SHULKER_SIDE = {16.0F / 64.0F, 16.0F / 64.0F, 32.0F / 64.0F, 28.0F / 64.0F};
+	// Bed head main box (texOffs 0,0, size 16x16x6): the blanket face, plus a wood side strip.
+	private static final float[] BED_TOP = {6.0F / 64.0F, 6.0F / 64.0F, 22.0F / 64.0F, 22.0F / 64.0F};
+	private static final float[] BED_FOOT_TOP = {6.0F / 64.0F, 28.0F / 64.0F, 22.0F / 64.0F, 44.0F / 64.0F};
+	private static final float[] BED_SIDE = {0.0F, 6.0F / 64.0F, 6.0F / 64.0F, 22.0F / 64.0F};
+	// Sign board front (64x32 sheet, board texOffs 0,0 size 24x12x2).
+	private static final float[] SIGN_BOARD = {2.0F / 64.0F, 2.0F / 32.0F, 26.0F / 64.0F, 14.0F / 32.0F};
+	// Banner cloth flag front (64x64 base sheet, cloth 20x40 at 1,1).
+	private static final float[] BANNER_CLOTH = {1.0F / 64.0F, 1.0F / 64.0F, 21.0F / 64.0F, 41.0F / 64.0F};
 
 	private static @Nullable Skin skinFor(BlockState state) {
 		String chest = null;
@@ -215,15 +247,106 @@ public final class BlockShapes {
 			chest = "normal";
 		}
 
-		if (chest == null) {
-			return null;
+		if (chest != null) {
+			try {
+				return new Skin(Sheets.CHEST_MAPPER.defaultNamespaceApply(chest).texture(), CHEST_TOP, CHEST_SIDE);
+			} catch (Throwable e) {
+				return null;
+			}
 		}
 
-		try {
-			return new Skin(Sheets.CHEST_MAPPER.defaultNamespaceApply(chest).texture(), CHEST_TOP, CHEST_SIDE);
-		} catch (Throwable e) {
-			return null;
+		if (state.getBlock() instanceof ShulkerBoxBlock shulker) {
+			try {
+				DyeColor color = shulker.getColor();
+				Identifier texture = color == null
+						? Sheets.DEFAULT_SHULKER_TEXTURE_LOCATION.texture()
+						: Sheets.getShulkerBoxMaterial(color).texture();
+				return new Skin(texture, SHULKER_TOP, SHULKER_SIDE);
+			} catch (Throwable e) {
+				return null;
+			}
 		}
+
+		if (state.getBlock() instanceof BedBlock bed) {
+			try {
+				Identifier texture = Sheets.getBedMaterial(bed.getColor()).texture();
+				boolean foot = state.getValue(BedBlock.PART) == BedPart.FOOT;
+				return new Skin(texture, foot ? BED_FOOT_TOP : BED_TOP, BED_SIDE);
+			} catch (Throwable e) {
+				return null;
+			}
+		}
+
+		if (state.getBlock() instanceof DecoratedPotBlock) {
+			try {
+				// The pot-body texture on every face reads as a decorated pot (null region = whole sprite).
+				return new Skin(Sheets.DECORATED_POT_SIDE.texture(), null, null);
+			} catch (Throwable e) {
+				return null;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Signs and banners are drawn entirely by a block-entity renderer, so they have neither a block
+	 * model nor a collision outline to build boxes from. This stands in a representative shape - a
+	 * board on a post, or a cloth flag - skinned with the real entity texture.
+	 *
+	 * @return true when a shape was produced, so the caller skips the outline path
+	 */
+	private static boolean synthesize(List<RawQuad> out, BlockState state) {
+		if (state.getBlock() instanceof SignBlock sign) {
+			try {
+				Identifier texture = Sheets.getSignMaterial(sign.type()).texture();
+
+				if (state.getBlock() instanceof WallSignBlock) {
+					// A wall sign is a board flat against the block, no post.
+					emitBox(out, texture, SIGN_BOARD, BlockTextures.NO_TINT, 0.06F, 0.3F, 0.02F, 0.94F, 0.74F, 0.16F);
+				} else {
+					// A standing sign: a post in the lower half, the board across the top.
+					emitBox(out, texture, SIGN_BOARD, BlockTextures.NO_TINT, 0.44F, 0.0F, 0.44F, 0.56F, 0.55F, 0.56F);
+					emitBox(out, texture, SIGN_BOARD, BlockTextures.NO_TINT, 0.06F, 0.52F, 0.44F, 0.94F, 1.0F, 0.56F);
+				}
+
+				return true;
+			} catch (Throwable e) {
+				return false;
+			}
+		}
+
+		if (state.getBlock() instanceof AbstractBannerBlock banner) {
+			try {
+				Identifier texture = Sheets.BANNER_BASE.texture();
+				int cloth = banner.getColor().getTextureDiffuseColor();
+				// A tall cloth flag, tinted to the banner's colour, on a short dark post.
+				emitBox(out, texture, BANNER_CLOTH, 0xFF3A3A3A, 0.46F, 0.0F, 0.46F, 0.54F, 0.2F, 0.54F);
+				emitBox(out, texture, BANNER_CLOTH, cloth, 0.12F, 0.16F, 0.47F, 0.88F, 0.98F, 0.53F);
+				return true;
+			} catch (Throwable e) {
+				return false;
+			}
+		}
+
+		return false;
+	}
+
+	/** Emits the six faces of an axis-aligned box, all skinned from one texture region. */
+	private static void emitBox(List<RawQuad> out, Identifier texture, float @Nullable [] region, int tint,
+			float x0, float y0, float z0, float x1, float y1, float z1) {
+		addFace(out, texture, Direction.DOWN, region, tint,
+				new float[]{x0, x1, x1, x0}, new float[]{y0, y0, y0, y0}, new float[]{z0, z0, z1, z1});
+		addFace(out, texture, Direction.UP, region, tint,
+				new float[]{x0, x1, x1, x0}, new float[]{y1, y1, y1, y1}, new float[]{z1, z1, z0, z0});
+		addFace(out, texture, Direction.NORTH, region, tint,
+				new float[]{x1, x0, x0, x1}, new float[]{y1, y1, y0, y0}, new float[]{z0, z0, z0, z0});
+		addFace(out, texture, Direction.SOUTH, region, tint,
+				new float[]{x0, x1, x1, x0}, new float[]{y1, y1, y0, y0}, new float[]{z1, z1, z1, z1});
+		addFace(out, texture, Direction.WEST, region, tint,
+				new float[]{x0, x0, x0, x0}, new float[]{y1, y1, y0, y0}, new float[]{z0, z1, z1, z0});
+		addFace(out, texture, Direction.EAST, region, tint,
+				new float[]{x1, x1, x1, x1}, new float[]{y1, y1, y0, y0}, new float[]{z1, z0, z0, z1});
 	}
 
 	/** Builds box geometry from a block's outline shape, for blocks with no model of their own. */
@@ -315,11 +438,11 @@ public final class BlockShapes {
 	/** Worker thread: resolves the textures the quads reference. */
 	public static Shape build(Raw raw, BlockTextures.Faces faces) {
 		if (raw.quads().isEmpty()) {
-			return new Shape(raw.cube(), null, faces);
+			return new Shape(raw.cube(), null, faces, raw.water(), raw.waterlogged());
 		}
 
 		if (isUnitCube(raw.quads())) {
-			return new Shape(true, null, faces);
+			return new Shape(true, null, faces, false, raw.waterlogged());
 		}
 
 		Quad[] quads = new Quad[raw.quads().size()];
@@ -329,7 +452,7 @@ public final class BlockShapes {
 			quads[i] = new Quad(source, BlockTextures.texture(source.texture()));
 		}
 
-		return new Shape(false, quads, faces);
+		return new Shape(false, quads, faces, false, raw.waterlogged());
 	}
 
 	/**
