@@ -167,7 +167,9 @@ public class IndexScreen extends Screen {
 	private final Rect soundsToggle = new Rect();
 	private final Rect autoLoadToggle = new Rect();
 	private final Rect overwriteToggle = new Rect();
+	private final Rect changeFolderButton = new Rect();
 	private final Rect openFolderButton = new Rect();
+	private final Rect resetFolderButton = new Rect();
 
 	public IndexScreen(@Nullable Screen parent) {
 		super(Component.literal("The Schematic Index"));
@@ -977,7 +979,8 @@ public class IndexScreen extends Screen {
 		y += 24;
 
 		y = this.settingRow(ctx, this.soundsToggle, "Sound effects",
-				"Button clicks and the like chime.", Settings.sounds(), formX, y, formWidth, mouseX, mouseY);
+				"Toggle on/off sound effects like button clicks when opening menus.",
+				Settings.sounds(), formX, y, formWidth, mouseX, mouseY);
 		y = this.settingRow(ctx, this.autoLoadToggle, "Load into Litematica after download",
 				"Open a schematic as soon as it finishes downloading.", Settings.autoLoad(),
 				formX, y, formWidth, mouseX, mouseY);
@@ -989,21 +992,34 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, Theme.bold("Download folder"), formX, y, Theme.TEXT);
 		y += this.font.lineHeight + 3;
 
+		for (String row : this.wrap("The Download folder is meant to be your Schematic folder where you can "
+				+ "easily store or access your schematics in Litematica. It is automatically assigned to this "
+				+ "client's schematic folder, but you can change it if you prefer to download to a different "
+				+ "location.", formWidth, 6)) {
+			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
+			y += this.font.lineHeight + 1;
+		}
+
+		y += 4;
 		for (String row : this.wrap(Settings.downloadDirectory().toString(), formWidth, 2)) {
 			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_MUTE);
 			y += this.font.lineHeight + 1;
 		}
 
-		y += 3;
+		y += 4;
+		int changeWidth = this.font.width(Theme.bold("Change")) + 16;
 		int openWidth = this.font.width(Theme.bold("Open folder")) + 16;
-		this.openFolderButton.set(formX, y, openWidth, FIELD_HEIGHT);
+		this.changeFolderButton.set(formX, y, changeWidth, FIELD_HEIGHT);
+		this.openFolderButton.set(formX + changeWidth + 6, y, openWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.changeFolderButton, "Change", mouseX, mouseY, false);
 		this.pillButton(ctx, this.openFolderButton, "Open folder", mouseX, mouseY, false);
-		y += FIELD_HEIGHT + 8;
 
-		for (String row : this.wrap("Downloads follow the Minecraft session you launched, so files always land "
-				+ "in the profile you are actually playing - there is no path to keep in sync.", formWidth, 3)) {
-			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
-			y += this.font.lineHeight + 1;
+		if (Settings.hasCustomDownloadDirectory()) {
+			int resetWidth = this.font.width(Theme.bold("Reset")) + 16;
+			this.resetFolderButton.set(this.openFolderButton.x + openWidth + 6, y, resetWidth, FIELD_HEIGHT);
+			this.pillButton(ctx, this.resetFolderButton, "Reset", mouseX, mouseY, false);
+		} else {
+			this.resetFolderButton.set(0, 0, 0, 0);
 		}
 	}
 
@@ -1012,8 +1028,13 @@ public class IndexScreen extends Screen {
 		rect.set(x, y, width, FIELD_HEIGHT);
 		this.toggle(ctx, rect, label, on, mouseX, mouseY);
 		y += FIELD_HEIGHT + 3;
-		Theme.text(ctx, this.font, hint, x, y, Theme.TEXT_ASH);
-		return y + this.font.lineHeight + 9;
+
+		for (String row : this.wrap(hint, width, 2)) {
+			Theme.text(ctx, this.font, row, x, y, Theme.TEXT_ASH);
+			y += this.font.lineHeight + 1;
+		}
+
+		return y + 8;
 	}
 
 	// ------------------------------------------------------------------ detail modal
@@ -1411,12 +1432,39 @@ public class IndexScreen extends Screen {
 		} else if (this.overwriteToggle.contains(mouseX, mouseY)) {
 			Settings.toggleConfirmOverwrite();
 			Theme.click(1.1F);
+		} else if (this.changeFolderButton.contains(mouseX, mouseY)) {
+			Theme.click();
+			this.openDownloadPicker();
 		} else if (this.openFolderButton.contains(mouseX, mouseY)) {
 			Theme.click();
 			this.openDownloadFolder();
+		} else if (this.resetFolderButton.contains(mouseX, mouseY)) {
+			Theme.click();
+			Settings.clearDownloadDirectory();
 		}
 
 		return true;
+	}
+
+	/** Native folder chooser, on its own thread so the blocking dialog does not freeze the render loop. */
+	private void openDownloadPicker() {
+		new Thread(() -> {
+			String result;
+
+			try {
+				result = TinyFileDialogs.tinyfd_selectFolderDialog(
+						"Choose a download folder", Settings.downloadDirectory().toString());
+			} catch (Throwable e) {
+				SchematicIndexMod.LOGGER.warn("Folder picker failed", e);
+				return;
+			}
+
+			if (result == null || result.isBlank()) {
+				return;
+			}
+
+			Minecraft.getInstance().execute(() -> Settings.setDownloadDirectory(Path.of(result.trim())));
+		}, "schematicindex-folder-picker").start();
 	}
 
 	private void openDownloadFolder() {
