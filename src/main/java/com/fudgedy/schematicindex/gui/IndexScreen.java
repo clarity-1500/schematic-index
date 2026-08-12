@@ -165,7 +165,6 @@ public class IndexScreen extends Screen {
 
 	// Settings page controls
 	private final Rect soundsToggle = new Rect();
-	private final Rect autoLoadToggle = new Rect();
 	private final Rect overwriteToggle = new Rect();
 	private final Rect changeFolderButton = new Rect();
 	private final Rect openFolderButton = new Rect();
@@ -981,11 +980,9 @@ public class IndexScreen extends Screen {
 		y = this.settingRow(ctx, this.soundsToggle, "Sound effects",
 				"Toggle on/off sound effects like button clicks when opening menus.",
 				Settings.sounds(), formX, y, formWidth, mouseX, mouseY);
-		y = this.settingRow(ctx, this.autoLoadToggle, "Load into Litematica after download",
-				"Open a schematic as soon as it finishes downloading.", Settings.autoLoad(),
-				formX, y, formWidth, mouseX, mouseY);
 		y = this.settingRow(ctx, this.overwriteToggle, "Confirm before overwriting",
-				"Ask first when a file of the same name already exists.", Settings.confirmOverwrite(),
+				"Confirm first when overwriting a file that contains the same name, when downloading "
+						+ "a new schematic.", Settings.confirmOverwrite(),
 				formX, y, formWidth, mouseX, mouseY);
 
 		y += 6;
@@ -1426,9 +1423,6 @@ public class IndexScreen extends Screen {
 			Settings.toggleSounds();
 			// Plays only if sound is now on, which is its own confirmation.
 			Theme.click(1.2F);
-		} else if (this.autoLoadToggle.contains(mouseX, mouseY)) {
-			Settings.toggleAutoLoad();
-			Theme.click(1.1F);
 		} else if (this.overwriteToggle.contains(mouseX, mouseY)) {
 			Settings.toggleConfirmOverwrite();
 			Theme.click(1.1F);

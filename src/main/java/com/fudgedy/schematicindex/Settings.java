@@ -24,12 +24,10 @@ public final class Settings {
 	private static final String FILE_NAME = SchematicIndexMod.MOD_ID + ".properties";
 
 	private static final String KEY_SOUNDS = "sound_effects";
-	private static final String KEY_AUTO_LOAD = "load_after_download";
 	private static final String KEY_CONFIRM_OVERWRITE = "confirm_overwrite";
 	private static final String KEY_DOWNLOAD_DIR = "download_directory";
 
 	private static boolean sounds = true;
-	private static boolean autoLoad = true;
 	private static boolean confirmOverwrite = true;
 	private static @Nullable Path customDownloadDirectory;
 	private static boolean loaded;
@@ -41,21 +39,12 @@ public final class Settings {
 		return sounds;
 	}
 
-	public static boolean autoLoad() {
-		return autoLoad;
-	}
-
 	public static boolean confirmOverwrite() {
 		return confirmOverwrite;
 	}
 
 	public static void toggleSounds() {
 		sounds = !sounds;
-		save();
-	}
-
-	public static void toggleAutoLoad() {
-		autoLoad = !autoLoad;
 		save();
 	}
 
@@ -119,7 +108,6 @@ public final class Settings {
 		}
 
 		sounds = parse(properties.getProperty(KEY_SOUNDS), true);
-		autoLoad = parse(properties.getProperty(KEY_AUTO_LOAD), true);
 		confirmOverwrite = parse(properties.getProperty(KEY_CONFIRM_OVERWRITE), true);
 
 		String stored = properties.getProperty(KEY_DOWNLOAD_DIR);
@@ -130,7 +118,6 @@ public final class Settings {
 		Path path = FabricLoader.getInstance().getConfigDir().resolve(FILE_NAME);
 		Properties properties = new Properties();
 		properties.setProperty(KEY_SOUNDS, Boolean.toString(sounds));
-		properties.setProperty(KEY_AUTO_LOAD, Boolean.toString(autoLoad));
 		properties.setProperty(KEY_CONFIRM_OVERWRITE, Boolean.toString(confirmOverwrite));
 
 		if (customDownloadDirectory != null) {
