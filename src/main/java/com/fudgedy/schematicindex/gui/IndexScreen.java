@@ -166,6 +166,9 @@ public class IndexScreen extends Screen {
 	/** 1 = every layer shown; lower values hide the top of the build so interiors can be read. */
 	private float detailLayer = 1.0F;
 	private boolean draggingLayer;
+	/** While following, the Follow button first asks to confirm before it actually unfollows. */
+	private boolean followConfirm;
+	private long followConfirmAt;
 	private String status = "";
 
 	// Settings page controls
@@ -501,9 +504,13 @@ public class IndexScreen extends Screen {
 
 	private void pillButton(GuiGraphics ctx, Rect rect, String label, int mouseX, int mouseY, boolean primary) {
 		boolean hovered = rect.contains(mouseX, mouseY);
-		int fill = primary
-				? (hovered ? Theme.ACCENT_PRESSED : Theme.ACCENT)
-				: (hovered ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
+		float hover = Theme.buttonHover(rect, hovered);
+		float scale = Theme.buttonScale(rect, 1.0F + Theme.HOVER_SCALE * hover);
+
+		Theme.pushScale(ctx, rect.x, rect.y, rect.width, rect.height, scale);
+
+		// Hover shifts the fill slightly lighter rather than darker, per the requested feel.
+		int fill = Theme.lighten(primary ? Theme.ACCENT : Theme.SURFACE_CARD, 0.12F * hover);
 		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL, fill);
 
 		if (hovered && !primary) {
@@ -515,13 +522,19 @@ public class IndexScreen extends Screen {
 				rect.x + (rect.width - this.font.width(text)) / 2,
 				rect.y + (rect.height - this.font.lineHeight) / 2 + 1,
 				primary ? Theme.ON_ACCENT : Theme.TEXT);
+
+		Theme.pop(ctx);
 	}
 
 	/** A labelled on/off row: filled accent square when on, hollow when off. */
 	private void toggle(GuiGraphics ctx, Rect rect, String label, boolean on, int mouseX, int mouseY) {
 		boolean hovered = rect.contains(mouseX, mouseY);
+		float hover = Theme.buttonHover(rect, hovered);
+		float scale = Theme.buttonScale(rect, 1.0F + Theme.HOVER_SCALE * hover);
+		Theme.pushScale(ctx, rect.x, rect.y, rect.width, rect.height, scale);
+
 		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL,
-				hovered ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
+				Theme.lighten(Theme.SURFACE_CARD, 0.10F * hover));
 
 		int boxSize = 8;
 		int boxX = rect.x + 5;
@@ -536,6 +549,8 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, Theme.clip(this.font, label, rect.width - boxSize - 14),
 				boxX + boxSize + 5, rect.y + (rect.height - this.font.lineHeight) / 2 + 1,
 				on ? Theme.TEXT : Theme.TEXT_MUTE);
+
+		Theme.pop(ctx);
 	}
 
 	/** A thin track with a draggable knob, value 0..1. Used by the layer control. */
@@ -556,19 +571,24 @@ public class IndexScreen extends Screen {
 	/** Save-for-later toggle: filled accent when kept, hollow outline when not. */
 	private void saveButton(GuiGraphics ctx, Rect rect, boolean saved, int mouseX, int mouseY) {
 		boolean hovered = rect.contains(mouseX, mouseY);
+		float hover = Theme.buttonHover(rect, hovered);
+		float scale = Theme.buttonScale(rect, 1.0F + Theme.HOVER_SCALE * hover);
 		String label = saved ? "Saved" : "Save for later";
+
+		Theme.pushScale(ctx, rect.x, rect.y, rect.width, rect.height, scale);
 
 		if (saved) {
 			Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL,
-					hovered ? Theme.ACCENT_PRESSED : Theme.ACCENT);
+					Theme.lighten(Theme.ACCENT, 0.12F * hover));
 			Theme.text(ctx, this.font, Theme.bold(label),
 					rect.x + (rect.width - this.font.width(Theme.bold(label))) / 2,
 					rect.y + (rect.height - this.font.lineHeight) / 2 + 1, Theme.ON_ACCENT);
+			Theme.pop(ctx);
 			return;
 		}
 
 		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL,
-				hovered ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
+				Theme.lighten(Theme.SURFACE_CARD, 0.12F * hover));
 
 		if (hovered) {
 			Theme.roundedOutline(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL, Theme.ACCENT_BRIGHT);
@@ -577,6 +597,8 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, Theme.bold(label),
 				rect.x + (rect.width - this.font.width(Theme.bold(label))) / 2,
 				rect.y + (rect.height - this.font.lineHeight) / 2 + 1, Theme.TEXT);
+
+		Theme.pop(ctx);
 	}
 
 	/**
@@ -586,8 +608,12 @@ public class IndexScreen extends Screen {
 	 */
 	private void downloadButton(GuiGraphics ctx, Rect rect, SchematicEntry entry, int mouseX, int mouseY) {
 		boolean hovered = rect.contains(mouseX, mouseY);
+		float hover = Theme.buttonHover(rect, hovered);
+		float scale = Theme.buttonScale(rect, 1.0F + Theme.HOVER_SCALE * hover);
+		Theme.pushScale(ctx, rect.x, rect.y, rect.width, rect.height, scale);
+
 		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL,
-				hovered ? Theme.ACCENT_PRESSED : Theme.ACCENT);
+				Theme.lighten(Theme.ACCENT, 0.12F * hover));
 
 		Download.Progress progress = Download.progress(entry.id());
 		String label = "Download";
@@ -616,6 +642,8 @@ public class IndexScreen extends Screen {
 		String text = Theme.bold(label);
 		Theme.text(ctx, this.font, text, rect.x + (rect.width - this.font.width(text)) / 2,
 				rect.y + (rect.height - this.font.lineHeight) / 2 + 1, Theme.ON_ACCENT);
+
+		Theme.pop(ctx);
 	}
 
 	private void arrowButton(GuiGraphics ctx, Rect rect, boolean left, int mouseX, int mouseY) {
@@ -1221,18 +1249,24 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, Theme.bold(Theme.clipBold(this.font, entry.title(), infoWidth - ageWidth - 6)),
 				infoX, line, Theme.TEXT);
 		line += this.font.lineHeight + 4;
-		Theme.text(ctx, this.font, Theme.clip(this.font, "Posted by " + entry.poster(), infoWidth), infoX, line, Theme.TEXT_MUTE);
-		line += this.font.lineHeight + 1;
-		Theme.text(ctx, this.font, Theme.clip(this.font, "Designed by " + entry.designer(), infoWidth), infoX, line, Theme.TEXT_MUTE);
-		line += this.font.lineHeight + 4;
+		// Compact follow pill at the right end of the "Posted by" line. "Following" fills accent; the
+		// "Follow" and "Unfollow?" confirm states are outlined so they read differently.
+		if (this.followConfirm && System.currentTimeMillis() - this.followConfirmAt > 3000L) {
+			this.followConfirm = false;
+		}
 
-		// Follow the poster: fills accent while following. Toggling it queues a toast either way.
 		boolean following = Follows.isFollowing(entry.poster());
-		String followLabel = following ? "Following" : "Follow";
-		int followWidth = Math.min(infoWidth, this.font.width(Theme.bold(followLabel)) + 20);
-		this.detailFollow.set(infoX, line, followWidth, 13);
-		this.pillButton(ctx, this.detailFollow, followLabel, mouseX, mouseY, following);
-		line += 13 + 6;
+		String followLabel = !following ? "Follow" : (this.followConfirm ? "Unfollow?" : "Following");
+		int followWidth = this.font.width(Theme.bold(followLabel)) + 12;
+		this.detailFollow.set(infoX + infoWidth - followWidth, line - 1, followWidth, 12);
+		this.pillButton(ctx, this.detailFollow, followLabel, mouseX, mouseY, following && !this.followConfirm);
+
+		Theme.text(ctx, this.font, Theme.clip(this.font, "Posted by " + entry.poster(), infoWidth - followWidth - 6),
+				infoX, line, Theme.TEXT_MUTE);
+		line += this.font.lineHeight + 3;
+
+		Theme.text(ctx, this.font, Theme.clip(this.font, "Designed by " + entry.designer(), infoWidth), infoX, line, Theme.TEXT_MUTE);
+		line += this.font.lineHeight + 6;
 
 		line = this.metaRow(ctx, "Dimensions", entry.dimensionsLabel(), infoX, line, infoWidth);
 		line = this.metaRow(ctx, "Blocks", entry.blockCountLabel(), infoX, line, infoWidth);
@@ -1356,6 +1390,8 @@ public class IndexScreen extends Screen {
 		double mouseX = event.x();
 		double mouseY = event.y();
 
+		this.registerButtonPress(mouseX, mouseY);
+
 		if (this.detail != null) {
 			if (this.detailModel && this.layerSlider.contains(mouseX, mouseY)) {
 				this.draggingLayer = true;
@@ -1440,6 +1476,7 @@ public class IndexScreen extends Screen {
 				this.detailPitch = 28.0F;
 				this.detailZoom = 1.0F;
 				this.detailLayer = 1.0F;
+				this.followConfirm = false;
 				this.status = "";
 			}
 
@@ -1754,6 +1791,7 @@ public class IndexScreen extends Screen {
 		if (this.detailClose.contains(mouseX, mouseY)) {
 			Theme.click(0.9F);
 			this.detail = null;
+			this.followConfirm = false;
 			this.status = "";
 		} else if (this.detailHeart.contains(mouseX, mouseY)) {
 			toggleLike(entry);
@@ -1781,12 +1819,21 @@ public class IndexScreen extends Screen {
 		} else if (this.detailSave.contains(mouseX, mouseY)) {
 			toggleSaved(entry);
 		} else if (this.detailFollow.contains(mouseX, mouseY)) {
-			boolean nowFollowing = Follows.toggle(entry.poster());
-			Theme.click(nowFollowing ? 1.3F : 0.9F);
-
-			if (nowFollowing) {
-				Toasts.push("Following " + entry.poster(), "You'll get a toast when they post.",
+			if (!Follows.isFollowing(entry.poster())) {
+				Follows.toggle(entry.poster());
+				Theme.click(1.3F);
+				Toasts.push("Followed " + entry.poster(), "You'll get a toast when they post.",
 						new ItemStack(Items.PLAYER_HEAD));
+				this.followConfirm = false;
+			} else if (!this.followConfirm) {
+				// First click while following asks to confirm instead of dropping it straight away.
+				this.followConfirm = true;
+				this.followConfirmAt = System.currentTimeMillis();
+				Theme.click(0.9F);
+			} else {
+				Follows.toggle(entry.poster());
+				Theme.click(0.8F);
+				this.followConfirm = false;
 			}
 		} else if (this.detailDownload.contains(mouseX, mouseY)) {
 			this.startDownload(entry);
@@ -1888,6 +1935,24 @@ public class IndexScreen extends Screen {
 		this.orbiting = false;
 		this.draggingLayer = false;
 		return super.mouseReleased(event);
+	}
+
+	/** Plays the press dip on whichever animated button a click landed on. */
+	private void registerButtonPress(double mouseX, double mouseY) {
+		Rect[] buttons = this.detail != null
+				? new Rect[]{this.detailClose, this.detailSave, this.detailFollow, this.detailDownload,
+						this.detailPreview3d, this.resetViewButton, this.cutawayToggle, this.freeLookToggle}
+				: new Rect[]{this.closeButton, this.sortButton, this.retryButton, this.unlockButton,
+						this.signOutButton, this.formCategoryButton, this.uploadPicturesButton,
+						this.uploadSchematicButton, this.postButton, this.changeFolderButton,
+						this.openFolderButton, this.resetFolderButton, this.soundsToggle, this.overwriteToggle};
+
+		for (Rect rect : buttons) {
+			if (rect.contains(mouseX, mouseY)) {
+				Theme.buttonPress(rect);
+				return;
+			}
+		}
 	}
 
 	@Override

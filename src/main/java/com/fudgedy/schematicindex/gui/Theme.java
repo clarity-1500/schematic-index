@@ -9,6 +9,9 @@ import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.resources.Identifier;
 import net.minecraft.sounds.SoundEvents;
 
+import java.util.IdentityHashMap;
+import java.util.Map;
+
 /**
  * Palette and drawing primitives.
  *
@@ -191,6 +194,99 @@ public final class Theme {
 
 	public static boolean inside(double mouseX, double mouseY, int x, int y, int width, int height) {
 		return mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + height;
+	}
+
+	/** Mixes a colour toward white by {@code amount} (0..1), preserving alpha. */
+	public static int lighten(int color, float amount) {
+		int alpha = color >>> 24;
+		int red = (color >> 16) & 0xFF;
+		int green = (color >> 8) & 0xFF;
+		int blue = color & 0xFF;
+		red += Math.round((255 - red) * amount);
+		green += Math.round((255 - green) * amount);
+		blue += Math.round((255 - blue) * amount);
+		return (alpha << 24) | (red << 16) | (green << 8) | blue;
+	}
+
+	// ------------------------------------------------------------------ button feel
+	//
+	// A button scales up slightly on hover (eased over ~200ms) and dips to 0.98 the instant it is
+	// clicked, springing back for tactile feedback. State is keyed by the button's own Rect, which is
+	// a stable per-button field, so immediate-mode drawing keeps a memory between frames.
+
+	private static final long HOVER_MS = 200L;
+	private static final long PRESS_MS = 150L;
+	public static final float HOVER_SCALE = 0.02F;
+	public static final float PRESS_SCALE = 0.98F;
+
+	private static final class Fx {
+		float hover;
+		long lastUpdate;
+		long pressAt = -1L;
+	}
+
+	private static final Map<Object, Fx> BUTTON_FX = new IdentityHashMap<>();
+
+	/** Advances and returns the hover amount (0..1) for a button, eased over {@link #HOVER_MS}. */
+	public static float buttonHover(Object key, boolean hovered) {
+		long now = Minecraft.getInstance() == null ? 0L : System.currentTimeMillis();
+		Fx fx = BUTTON_FX.get(key);
+
+		if (fx == null) {
+			fx = new Fx();
+			fx.hover = hovered ? 1.0F : 0.0F;
+			fx.lastUpdate = now;
+			BUTTON_FX.put(key, fx);
+			return fx.hover;
+		}
+
+		float step = (now - fx.lastUpdate) / (float) HOVER_MS;
+		fx.lastUpdate = now;
+		float target = hovered ? 1.0F : 0.0F;
+		fx.hover = fx.hover < target
+				? Math.min(target, fx.hover + step)
+				: Math.max(target, fx.hover - step);
+		return fx.hover;
+	}
+
+	/** Records a click on a button so it plays its press dip. */
+	public static void buttonPress(Object key) {
+		Fx fx = BUTTON_FX.computeIfAbsent(key, k -> new Fx());
+		fx.pressAt = System.currentTimeMillis();
+	}
+
+	/** Applies the press dip to a base scale (from hover), returning the scale to draw at this frame. */
+	public static float buttonScale(Object key, float base) {
+		Fx fx = BUTTON_FX.get(key);
+
+		if (fx == null || fx.pressAt < 0L) {
+			return base;
+		}
+
+		long age = System.currentTimeMillis() - fx.pressAt;
+
+		if (age >= PRESS_MS) {
+			fx.pressAt = -1L;
+			return base;
+		}
+
+		float t = age / (float) PRESS_MS;
+		float eased = 1.0F - (1.0F - t) * (1.0F - t) * (1.0F - t);
+		return PRESS_SCALE + (base - PRESS_SCALE) * eased;
+	}
+
+	/** Pushes a scale-about-centre transform for a button of the given bounds. Pair with {@link #pop}. */
+	public static void pushScale(GuiGraphics ctx, int x, int y, int width, int height, float scale) {
+		float centreX = x + width / 2.0F;
+		float centreY = y + height / 2.0F;
+		ctx.pose().pushMatrix();
+		ctx.pose().translate(centreX, centreY);
+		ctx.pose().scale(scale, scale);
+		ctx.pose().translate(-centreX, -centreY);
+	}
+
+	public static void pop(GuiGraphics ctx) {
+		ctx.pose().popMatrix();
 	}
 
 	/** Draws a texture scaled into the given box. Source is always the full 512x288 thumbnail. */
