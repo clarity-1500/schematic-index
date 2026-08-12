@@ -1,5 +1,6 @@
 package com.fudgedy.schematicindex.gui;
 
+import com.fudgedy.schematicindex.Settings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -22,6 +23,8 @@ public final class Theme {
 	public static final int ACCENT = 0xFF2A7A5B;
 	public static final int ACCENT_PRESSED = 0xFF24684D;
 	public static final int ACCENT_BRIGHT = 0xFF3FA87F;
+	/** Lighter green for the download progress fill, so it reads as motion over the accent button. */
+	public static final int DOWNLOAD_FILL = 0xFF6FD9AE;
 	public static final int ON_ACCENT = 0xFFFFFFFF;
 
 	public static final int BACKDROP = 0xFF0F1114;
@@ -145,6 +148,47 @@ public final class Theme {
 		return out + ellipsis;
 	}
 
+	/**
+	 * Same as {@link #clip} but measured as bold. The bold format code adds a pixel per character, so
+	 * a title clipped to a plain-text width still overruns once it is bolded - which is what pushed
+	 * long card titles past their border. Callers wrap the result in {@link #bold}.
+	 */
+	public static String clipBold(Font font, String value, int maxWidth) {
+		if (font.width(bold(value)) <= maxWidth) {
+			return value;
+		}
+
+		String ellipsis = "...";
+		int room = maxWidth - font.width(bold(ellipsis));
+
+		if (room <= 0) {
+			return "";
+		}
+
+		StringBuilder out = new StringBuilder();
+
+		for (int i = 0; i < value.length(); i++) {
+			if (font.width(bold(out.toString() + value.charAt(i))) > room) {
+				break;
+			}
+
+			out.append(value.charAt(i));
+		}
+
+		return out + ellipsis;
+	}
+
+	/** How many characters of {@code value} fit within {@code maxWidth} when drawn bold. */
+	public static int boldFitCount(Font font, String value, int maxWidth) {
+		for (int i = 0; i < value.length(); i++) {
+			if (font.width(bold(value.substring(0, i + 1))) > maxWidth) {
+				return i;
+			}
+		}
+
+		return value.length();
+	}
+
 	public static boolean inside(double mouseX, double mouseY, int x, int y, int width, int height) {
 		return mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + height;
 	}
@@ -225,6 +269,10 @@ public final class Theme {
 
 	/** A short UI click. Pitch lets a toggle sound different from a plain press. */
 	public static void click(float pitch) {
+		if (!Settings.sounds()) {
+			return;
+		}
+
 		Minecraft client = Minecraft.getInstance();
 
 		if (client != null && client.getSoundManager() != null) {
@@ -245,8 +293,9 @@ public final class Theme {
 
 		if (age >= 0 && age < HEART_POP_MILLIS) {
 			float progress = age / (float) HEART_POP_MILLIS;
-			// Up fast, settle back: a half sine reads as a pop rather than a wobble.
-			scale = 1.0F + 0.55F * (float) Math.sin(progress * Math.PI);
+			// Up fast, settle back: a half sine reads as a pop rather than a wobble. Kept subtle - a
+			// slight swell, not a lunge - so a like feels acknowledged without the heart jumping.
+			scale = 1.0F + 0.22F * (float) Math.sin(progress * Math.PI);
 		}
 
 		if (scale == 1.0F) {
@@ -264,7 +313,7 @@ public final class Theme {
 		ctx.pose().popMatrix();
 	}
 
-	public static final long HEART_POP_MILLIS = 260L;
+	public static final long HEART_POP_MILLIS = 220L;
 
 	public static void heart(GuiGraphics ctx, int x, int y, boolean liked) {
 		ctx.blitSprite(RenderPipelines.GUI_TEXTURED, Identifier.withDefaultNamespace("hud/heart/container"), x, y, 9, 9);

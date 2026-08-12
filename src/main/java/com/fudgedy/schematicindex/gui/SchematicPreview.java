@@ -48,6 +48,8 @@ public final class SchematicPreview {
 	public static final float MIN_ZOOM = 0.8F;
 
 	private static final int MAX_VOXELS = 6_000_000;
+	/** Built models are heavy - each holds a full voxel grid - so only a few are kept resident. */
+	private static final int MAX_CACHED_MODELS = 5;
 	private static final int BACKGROUND = 0xFF10151A;
 	private static final double FIELD_OF_VIEW = 70.0D;
 
@@ -76,7 +78,7 @@ public final class SchematicPreview {
 	 *                 frozen where the orbit camera was when the mode was switched on
 	 */
 	private record View(int slot, float yaw, float pitch, float zoom, boolean cutaway, boolean freeLook,
-			double eyeX, double eyeY, double eyeZ) {
+			double eyeX, double eyeY, double eyeZ, float maxLayer) {
 	}
 
 	private record Frame(View view, @Nullable NativeImage image) {
@@ -164,6 +166,11 @@ public final class SchematicPreview {
 		return FILES.isEmpty() ? null : FILES.get(Math.floorMod(slot, FILES.size()));
 	}
 
+	/** The local file backing a slot, if any. Used to copy it out when a download is requested. */
+	public static @Nullable Path pathFor(int slot) {
+		return fileFor(normalise(slot));
+	}
+
 	private static int normalise(int slot) {
 		if (slot >= PICKED_BASE) {
 			return slot;
@@ -232,7 +239,7 @@ public final class SchematicPreview {
 	 * dragging never builds up a backlog of stale frames.
 	 */
 	public static void request(int slot, float yaw, float pitch, float zoom, boolean cutaway,
-			boolean freeLook, double @Nullable [] eye) {
+			boolean freeLook, double @Nullable [] eye, float maxLayer) {
 		int index = normalise(slot);
 
 		if (index < 0 || fileFor(index) == null) {
@@ -250,7 +257,8 @@ public final class SchematicPreview {
 				: (freeLook ? eye(MODELS.get(index), index, yaw, pitch, zoom, cutaway) : null);
 
 		View wanted = new View(index, yaw, pitch, clampZoom(index, zoom), cutaway, freeLook,
-				from == null ? 0.0D : from[0], from == null ? 0.0D : from[1], from == null ? 0.0D : from[2]);
+				from == null ? 0.0D : from[0], from == null ? 0.0D : from[1], from == null ? 0.0D : from[2],
+				Math.max(0.05F, Math.min(1.0F, maxLayer)));
 
 		if (wanted.equals(queued) || (!rendering && wanted.equals(shown))) {
 			return;
@@ -338,6 +346,7 @@ public final class SchematicPreview {
 				if (pair != null) {
 					MODELS.put(index, finish((Draft) pair[0], (BlockTextures.Resolved[]) pair[1],
 							(BlockShapes.Raw[]) pair[2]));
+					evictModels(index);
 				}
 			} catch (Throwable e) {
 				SchematicIndexMod.LOGGER.warn("Could not build model for {}", file.getFileName(), e);
@@ -345,6 +354,20 @@ public final class SchematicPreview {
 				LOADING.remove(index);
 			}
 		});
+	}
+
+	/**
+	 * Keeps the resident model count at the cap. Once it is hit the others are dropped - the one just
+	 * built is always kept, since it is the one about to be shown - and the sprite-pixel cache is
+	 * cleared with them so the memory actually comes back.
+	 */
+	private static void evictModels(int keep) {
+		if (MODELS.size() <= MAX_CACHED_MODELS) {
+			return;
+		}
+
+		MODELS.keySet().removeIf(key -> key != keep);
+		BlockTextures.clear();
 	}
 
 	// ------------------------------------------------------------------ model building
@@ -520,6 +543,12 @@ public final class SchematicPreview {
 				? centreX * dirX + centreY * dirY + centreZ * dirZ - distance
 				: Double.NEGATIVE_INFINITY;
 
+		// The layer slider peels the top off the build: any voxel at or above this height renders as
+		// empty, so the interior can be read without moving the camera. 1.0 means the whole build.
+		int layerCeiling = view.maxLayer() >= 1.0F
+				? model.sizeY()
+				: Math.max(1, Math.round(view.maxLayer() * model.sizeY()));
+
 		if (view.freeLook()) {
 			// Standing still and turning on the spot wants a perspective camera - an orthographic
 			// one just slides a slab of the world past you and reads as the build rotating.
@@ -538,7 +567,7 @@ public final class SchematicPreview {
 					double length = Math.sqrt(rayX * rayX + rayY * rayY + rayZ * rayZ);
 
 					image.setPixel(px, py, trace(model, view.eyeX(), view.eyeY(), view.eyeZ(),
-							rayX / length, rayY / length, rayZ / length, planeDistance, hit));
+							rayX / length, rayY / length, rayZ / length, planeDistance, layerCeiling, hit));
 				}
 			}
 
@@ -556,7 +585,7 @@ public final class SchematicPreview {
 				double originZ = centreZ + rightZ * screenX + upZ * screenY - dirZ * distance;
 
 				image.setPixel(px, py,
-						trace(model, originX, originY, originZ, dirX, dirY, dirZ, planeDistance, hit));
+						trace(model, originX, originY, originZ, dirX, dirY, dirZ, planeDistance, layerCeiling, hit));
 			}
 		}
 
@@ -569,7 +598,7 @@ public final class SchematicPreview {
 	 *                      it are culled whole so zooming in reveals the interior cleanly
 	 */
 	private static int trace(Model model, double originX, double originY, double originZ,
-			double dirX, double dirY, double dirZ, double planeDistance, ShapeTracer.Hit hit) {
+			double dirX, double dirY, double dirZ, double planeDistance, int layerCeiling, ShapeTracer.Hit hit) {
 		double near = 0.0D;
 		double far = Double.MAX_VALUE;
 		int entryAxis = -1;
@@ -648,7 +677,8 @@ public final class SchematicPreview {
 		int insideZ = (int) Math.floor(originZ);
 
 		for (int i = 0; i < guard; i++) {
-			int cell = x == insideX && y == insideY && z == insideZ ? 0 : model.at(x, y, z);
+			int cell = (y >= layerCeiling || (x == insideX && y == insideY && z == insideZ))
+					? 0 : model.at(x, y, z);
 
 			if (cell != 0) {
 				BlockShapes.Shape shape = model.palette()[cell - 1];

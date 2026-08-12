@@ -4,6 +4,9 @@ package com.fudgedy.schematicindex.catalogue;
  * One catalogue post. Mirrors what the index JSON will eventually carry, so swapping the mock
  * catalogue for a real backend does not change the GUI.
  *
+ * @param title      the full schematic name, shown in the detail panel
+ * @param thumbnailName the short name shown on the card - capped at upload to what fits a card, so a
+ *                      long title can never break the card border
  * @param poster     the account that uploaded the post
  * @param designer   who actually built the design - often not the same person
  * @param imageCount how many gallery images the poster attached (first one is the thumbnail)
@@ -14,6 +17,7 @@ package com.fudgedy.schematicindex.catalogue;
 public record SchematicEntry(
 		String id,
 		String title,
+		String thumbnailName,
 		String poster,
 		String designer,
 		Category category,
@@ -30,6 +34,11 @@ public record SchematicEntry(
 		int schematicSlot,
 		boolean downloaded
 ) {
+	/** What the card shows: the short thumbnail name, falling back to the full title. */
+	public String cardName() {
+		return this.thumbnailName == null || this.thumbnailName.isBlank() ? this.title : this.thumbnailName;
+	}
+
 	public String dimensionsLabel() {
 		return this.sizeX + "x" + this.sizeY + "x" + this.sizeZ;
 	}

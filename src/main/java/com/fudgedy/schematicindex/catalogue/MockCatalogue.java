@@ -100,6 +100,7 @@ public final class MockCatalogue {
 				list.add(new SchematicEntry(
 						String.format(Locale.ROOT, "%s-%02d", category.name().toLowerCase(Locale.ROOT), i),
 						NAMES[group][i],
+						NAMES[group][i],
 						POSTERS[(group + i) % POSTERS.length],
 						DESIGNERS[(group * 3 + i) % DESIGNERS.length],
 						category,

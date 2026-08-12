@@ -1,8 +1,10 @@
 package com.fudgedy.schematicindex.gui;
 
 import com.fudgedy.schematicindex.SchematicIndexMod;
+import com.fudgedy.schematicindex.Settings;
 import com.fudgedy.schematicindex.catalogue.Catalogue;
 import com.fudgedy.schematicindex.catalogue.Category;
+import com.fudgedy.schematicindex.catalogue.Download;
 import com.fudgedy.schematicindex.catalogue.MockCatalogue;
 import com.fudgedy.schematicindex.catalogue.SchematicEntry;
 import net.minecraft.client.gui.GuiGraphics;
@@ -11,6 +13,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.Minecraft;
+import net.minecraft.util.Util;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.ItemStack;
@@ -20,6 +23,7 @@ import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.util.tinyfd.TinyFileDialogs;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -39,8 +43,9 @@ public class IndexScreen extends Screen {
 	private static final int OUTER_MARGIN = 8;
 	private static final int CONTENT_MAX_WIDTH = 720;
 	private static final int TOP_BAR_HEIGHT = 32;
-	private static final int RAIL_WIDTH = 30;
-	private static final int RAIL_ITEM_HEIGHT = 28;
+	private static final int RAIL_WIDTH = 34;
+	private static final int RAIL_ITEM_HEIGHT = 34;
+	private static final int RAIL_ITEM_GAP = 8;
 	private static final int GUTTER = 6;
 	private static final int CAPTION_HEIGHT = 28;
 	private static final int CHIP_HEIGHT = 14;
@@ -52,13 +57,17 @@ public class IndexScreen extends Screen {
 	/** Client-side only until there is a backend to post likes to. */
 	private static final Set<String> LIKED = new HashSet<>();
 
+	/** Posts the user chose to keep. This is what the Saved tab lists - not likes, not downloads. */
+	private static final Set<String> SAVED_POSTS = new HashSet<>();
+
 	/** When each post was last liked, so the heart can play its pop. */
 	private static final Map<String, Long> LIKE_POPS = new HashMap<>();
 
 	private enum Page {
 		BROWSE("Browse"),
 		SAVED("Saved"),
-		UPLOAD("Upload");
+		UPLOAD("Upload"),
+		SETTINGS("Settings");
 
 		private final String label;
 
@@ -71,6 +80,7 @@ public class IndexScreen extends Screen {
 				case BROWSE -> new ItemStack(Items.SPYGLASS);
 				case SAVED -> new ItemStack(Items.ENDER_CHEST);
 				case UPLOAD -> new ItemStack(Items.WRITABLE_BOOK);
+				case SETTINGS -> new ItemStack(Items.ANVIL);
 			};
 		}
 	}
@@ -98,6 +108,7 @@ public class IndexScreen extends Screen {
 	private EditBox searchBox;
 	private EditBox codeBox;
 	private EditBox titleBox;
+	private EditBox thumbnailBox;
 	private EditBox designerBox;
 	private EditBox descriptionBox;
 
@@ -138,14 +149,25 @@ public class IndexScreen extends Screen {
 	private final Rect cutawayToggle = new Rect();
 	private final Rect freeLookToggle = new Rect();
 	private final Rect resetViewButton = new Rect();
+	private final Rect layerSlider = new Rect();
 	private final Rect detailImageRect = new Rect();
 	private final Rect detailPrev = new Rect();
 	private final Rect detailNext = new Rect();
 	private final Rect detailDownload = new Rect();
 	private final Rect detailPreview3d = new Rect();
+	private final Rect detailSave = new Rect();
 	private final Rect detailClose = new Rect();
 	private final Rect detailHeart = new Rect();
+	/** 1 = every layer shown; lower values hide the top of the build so interiors can be read. */
+	private float detailLayer = 1.0F;
+	private boolean draggingLayer;
 	private String status = "";
+
+	// Settings page controls
+	private final Rect soundsToggle = new Rect();
+	private final Rect autoLoadToggle = new Rect();
+	private final Rect overwriteToggle = new Rect();
+	private final Rect openFolderButton = new Rect();
 
 	public IndexScreen(@Nullable Screen parent) {
 		super(Component.literal("The Schematic Index"));
@@ -180,13 +202,28 @@ public class IndexScreen extends Screen {
 
 		this.railRects.clear();
 
-		for (int i = 0; i < Page.values().length; i++) {
+		// Space the tabs out evenly and centre the group vertically, so they read as a deliberate set
+		// rather than a stack crammed under the top bar.
+		int railCount = Page.values().length;
+		int railBlock = RAIL_ITEM_HEIGHT + RAIL_ITEM_GAP;
+		int groupHeight = railCount * RAIL_ITEM_HEIGHT + (railCount - 1) * RAIL_ITEM_GAP;
+		int railTop = Math.max(TOP_BAR_HEIGHT + 10,
+				TOP_BAR_HEIGHT + (this.height - TOP_BAR_HEIGHT - groupHeight) / 2);
+
+		for (int i = 0; i < railCount; i++) {
 			Rect rect = new Rect();
-			rect.set(0, TOP_BAR_HEIGHT + 6 + i * RAIL_ITEM_HEIGHT, RAIL_WIDTH, RAIL_ITEM_HEIGHT);
+			rect.set(0, railTop + i * railBlock, RAIL_WIDTH, RAIL_ITEM_HEIGHT);
 			this.railRects.add(rect);
 		}
 
 		this.buildUploadFields();
+
+		// Cap the two names to what their destination can show, so neither can break a border. The
+		// thumbnail is capped to a card's text width, the full name to the detail panel's title room.
+		int avgBoldChar = Math.max(4, this.font.width(Theme.bold("abcdefghijklmnopqrstuvwxyz")) / 26 + 1);
+		this.thumbnailBox.setMaxLength(Math.max(10, (this.cardWidth - 12) / avgBoldChar));
+		this.titleBox.setMaxLength(Math.max(24, 190 / avgBoldChar));
+
 		this.layoutChips();
 		this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
 		this.gridBottom = this.height - OUTER_MARGIN;
@@ -213,6 +250,8 @@ public class IndexScreen extends Screen {
 				this.codeBox == null ? "" : this.codeBox.getValue());
 		this.titleBox = this.textField(formX + 6, y + 4, formWidth - 12, "Schematic name",
 				this.titleBox == null ? "" : this.titleBox.getValue());
+		this.thumbnailBox = this.textField(formX + 6, y + 4, formWidth - 12, "Thumbnail name",
+				this.thumbnailBox == null ? "" : this.thumbnailBox.getValue());
 		this.designerBox = this.textField(formX + 6, y + 4, formWidth - 12, "Designed by",
 				this.designerBox == null ? "" : this.designerBox.getValue());
 		this.descriptionBox = this.textField(formX + 6, y + 4, formWidth - 12, "Description",
@@ -319,7 +358,17 @@ public class IndexScreen extends Screen {
 	}
 
 	private static boolean isSaved(SchematicEntry entry) {
-		return entry.downloaded() || LIKED.contains(entry.id());
+		return SAVED_POSTS.contains(entry.id());
+	}
+
+	private static void toggleSaved(SchematicEntry entry) {
+		if (SAVED_POSTS.remove(entry.id())) {
+			Theme.click(0.9F);
+			return;
+		}
+
+		SAVED_POSTS.add(entry.id());
+		Theme.click(1.3F);
 	}
 
 	private static int likesOf(SchematicEntry entry) {
@@ -347,6 +396,8 @@ public class IndexScreen extends Screen {
 
 		if (this.page == Page.UPLOAD) {
 			this.renderUpload(ctx, hoverX, hoverY, partialTick);
+		} else if (this.page == Page.SETTINGS) {
+			this.renderSettings(ctx, hoverX, hoverY);
 		} else {
 			this.renderGrid(ctx, hoverX, hoverY);
 			this.renderScrollbar(ctx);
@@ -475,6 +526,86 @@ public class IndexScreen extends Screen {
 				on ? Theme.TEXT : Theme.TEXT_MUTE);
 	}
 
+	/** A thin track with a draggable knob, value 0..1. Used by the layer control. */
+	private void slider(GuiGraphics ctx, Rect rect, float value, int mouseX, int mouseY) {
+		float clamped = Math.max(0.0F, Math.min(1.0F, value));
+		int trackY = rect.y + rect.height / 2 - 1;
+		Theme.roundedRect(ctx, rect.x, trackY, rect.width, 2, 1, Theme.SURFACE_CARD);
+
+		int fill = Math.round(rect.width * clamped);
+		Theme.roundedRect(ctx, rect.x, trackY, fill, 2, 1, Theme.ACCENT);
+
+		boolean hovered = rect.contains(mouseX, mouseY);
+		int knobX = rect.x + Math.max(3, Math.min(rect.width - 3, fill));
+		Theme.roundedRect(ctx, knobX - 3, rect.y + rect.height / 2 - 4, 6, 8, 1,
+				hovered || this.draggingLayer ? Theme.ACCENT_BRIGHT : Theme.TEXT);
+	}
+
+	/** Save-for-later toggle: filled accent when kept, hollow outline when not. */
+	private void saveButton(GuiGraphics ctx, Rect rect, boolean saved, int mouseX, int mouseY) {
+		boolean hovered = rect.contains(mouseX, mouseY);
+		String label = saved ? "Saved" : "Save for later";
+
+		if (saved) {
+			Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL,
+					hovered ? Theme.ACCENT_PRESSED : Theme.ACCENT);
+			Theme.text(ctx, this.font, Theme.bold(label),
+					rect.x + (rect.width - this.font.width(Theme.bold(label))) / 2,
+					rect.y + (rect.height - this.font.lineHeight) / 2 + 1, Theme.ON_ACCENT);
+			return;
+		}
+
+		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL,
+				hovered ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
+
+		if (hovered) {
+			Theme.roundedOutline(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL, Theme.ACCENT_BRIGHT);
+		}
+
+		Theme.text(ctx, this.font, Theme.bold(label),
+				rect.x + (rect.width - this.font.width(Theme.bold(label))) / 2,
+				rect.y + (rect.height - this.font.lineHeight) / 2 + 1, Theme.TEXT);
+	}
+
+	/**
+	 * The Download button doubles as its own progress bar: a lighter green grows left to right over
+	 * the accent fill as real bytes land, and the label counts up. Polled every frame from
+	 * {@link Download}, so it tracks the actual transfer rather than playing a fixed animation.
+	 */
+	private void downloadButton(GuiGraphics ctx, Rect rect, SchematicEntry entry, int mouseX, int mouseY) {
+		boolean hovered = rect.contains(mouseX, mouseY);
+		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL,
+				hovered ? Theme.ACCENT_PRESSED : Theme.ACCENT);
+
+		Download.Progress progress = Download.progress(entry.id());
+		String label = "Download";
+
+		if (progress != null) {
+			float fraction = switch (progress.state()) {
+				case DONE -> 1.0F;
+				case RUNNING -> progress.fraction();
+				case FAILED -> 0.0F;
+			};
+
+			int fillWidth = Math.round((rect.width - 2) * Math.max(0.0F, Math.min(1.0F, fraction)));
+
+			if (fillWidth > 0) {
+				Theme.roundedRect(ctx, rect.x + 1, rect.y + 1, fillWidth, rect.height - 2,
+						Theme.RADIUS_PILL, Theme.DOWNLOAD_FILL);
+			}
+
+			label = switch (progress.state()) {
+				case RUNNING -> Math.round(fraction * 100) + "%";
+				case DONE -> "Saved";
+				case FAILED -> "Retry";
+			};
+		}
+
+		String text = Theme.bold(label);
+		Theme.text(ctx, this.font, text, rect.x + (rect.width - this.font.width(text)) / 2,
+				rect.y + (rect.height - this.font.lineHeight) / 2 + 1, Theme.ON_ACCENT);
+	}
+
 	private void arrowButton(GuiGraphics ctx, Rect rect, boolean left, int mouseX, int mouseY) {
 		boolean hovered = rect.contains(mouseX, mouseY);
 		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL,
@@ -516,7 +647,7 @@ public class IndexScreen extends Screen {
 
 		if (this.visible.isEmpty()) {
 			String message = this.page == Page.SAVED
-					? "Nothing saved yet - like or download a post"
+					? "Nothing saved yet - open a post and Save for later"
 					: "Nothing matches that filter";
 			Theme.text(ctx, this.font, message,
 					this.contentX + (this.contentWidth - this.font.width(message)) / 2,
@@ -632,7 +763,7 @@ public class IndexScreen extends Screen {
 		Theme.roundedRect(ctx, heart.x - 2, heart.y - 2, HEART_SIZE + 4, HEART_SIZE + 4, Theme.RADIUS_PILL, 0xCC0F1114);
 		Theme.heartPopped(ctx, heart.x, heart.y, LIKED.contains(entry.id()), popAge(entry));
 
-		if (entry.downloaded()) {
+		if (isSaved(entry)) {
 			int badge = this.font.width("Saved") + 8;
 			int badgeX = x + this.cardWidth - badge - 4;
 			Theme.roundedRect(ctx, badgeX - 1, y + 3, badge + 2, 13, Theme.RADIUS_PILL, 0xFF000000);
@@ -642,7 +773,9 @@ public class IndexScreen extends Screen {
 
 		int textX = x + 5;
 		int textWidth = this.cardWidth - 10;
-		Theme.text(ctx, this.font, Theme.bold(Theme.clip(this.font, entry.title(), textWidth)),
+		// clipBold, not clip: the bold format code widens each glyph, so a title measured plain then
+		// bolded used to overrun the card. The card shows the short thumbnail name.
+		Theme.text(ctx, this.font, Theme.bold(Theme.clipBold(this.font, entry.cardName(), textWidth)),
 				textX, y + imageHeight + 6, Theme.TEXT);
 
 		// Right-aligned download glyph + count, then the poster gets whatever room is left, so a long
@@ -717,46 +850,57 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, Theme.bold("Signed in as " + UploaderAccess.profile()), formX, y, Theme.TEXT);
 		this.signOutButton.set(formX + formWidth - 58, y - 4, 58, FIELD_HEIGHT);
 		this.pillButton(ctx, this.signOutButton, "Sign out", mouseX, mouseY, false);
-		y += 18;
+		y += 24;
 
+		// Full schematic name - shown on the post's detail panel. Capped so it can't run under the age.
 		Theme.text(ctx, this.font, "Schematic name", formX, y, Theme.TEXT_ASH);
-		y += this.font.lineHeight + 2;
+		Theme.text(ctx, this.font, "on the post page",
+				formX + formWidth - this.font.width("on the post page"), y, Theme.TEXT_ASH);
+		y += this.font.lineHeight + 3;
 		this.field(ctx, this.titleBox, formX, y, formWidth, mouseX, mouseY, partialTick);
-		y += FIELD_HEIGHT + 6;
+		y += FIELD_HEIGHT + 11;
+
+		// Short name for the card. Defaults to the schematic name if left blank.
+		Theme.text(ctx, this.font, "Thumbnail name", formX, y, Theme.TEXT_ASH);
+		Theme.text(ctx, this.font, "on the card",
+				formX + formWidth - this.font.width("on the card"), y, Theme.TEXT_ASH);
+		y += this.font.lineHeight + 3;
+		this.field(ctx, this.thumbnailBox, formX, y, formWidth, mouseX, mouseY, partialTick);
+		y += FIELD_HEIGHT + 11;
 
 		Theme.text(ctx, this.font, "Designed by", formX, y, Theme.TEXT_ASH);
-		y += this.font.lineHeight + 2;
+		y += this.font.lineHeight + 3;
 		this.field(ctx, this.designerBox, formX, y, formWidth, mouseX, mouseY, partialTick);
-		y += FIELD_HEIGHT + 6;
+		y += FIELD_HEIGHT + 11;
 
 		Theme.text(ctx, this.font, "Description", formX, y, Theme.TEXT_ASH);
-		y += this.font.lineHeight + 2;
+		y += this.font.lineHeight + 3;
 		this.field(ctx, this.descriptionBox, formX, y, formWidth, mouseX, mouseY, partialTick);
-		y += FIELD_HEIGHT + 8;
+		y += FIELD_HEIGHT + 13;
 
 		this.formCategoryButton.set(formX, y, formWidth, FIELD_HEIGHT);
 		this.pillButton(ctx, this.formCategoryButton, "Category: " + this.formCategory.label(), mouseX, mouseY, false);
-		y += FIELD_HEIGHT + 8;
+		y += FIELD_HEIGHT + 13;
 
 		// The schematic itself - the one genuinely required file.
 		Theme.text(ctx, this.font, "Schematic file", formX, y, Theme.TEXT_ASH);
-		y += this.font.lineHeight + 2;
+		y += this.font.lineHeight + 3;
 
 		this.uploadSchematicButton.set(formX, y, formWidth, FIELD_HEIGHT);
 		this.pillButton(ctx, this.uploadSchematicButton,
 				this.formSchematic == null ? "Choose .litematic" : "Change file", mouseX, mouseY, false);
-		y += FIELD_HEIGHT + 3;
+		y += FIELD_HEIGHT + 4;
 
 		String chosen = this.formSchematic == null
 				? "No file chosen"
 				: this.formSchematic.getFileName().toString();
 		Theme.text(ctx, this.font, Theme.clip(this.font, chosen, formWidth), formX, y,
 				this.formSchematic == null ? Theme.TEXT_ASH : Theme.ACCENT_BRIGHT);
-		y += this.font.lineHeight + 8;
+		y += this.font.lineHeight + 12;
 
 		// Image picker. Stands in for the web upload form's file picker plus crop step.
 		Theme.text(ctx, this.font, "Pictures", formX, y, Theme.TEXT_ASH);
-		y += this.font.lineHeight + 2;
+		y += this.font.lineHeight + 3;
 
 		int previewWidth = Math.min(formWidth, 160);
 		int previewHeight = imageHeight(previewWidth);
@@ -822,6 +966,56 @@ public class IndexScreen extends Screen {
 		box.render(ctx, mouseX, mouseY, partialTick);
 	}
 
+	// ------------------------------------------------------------------ settings page
+
+	private void renderSettings(GuiGraphics ctx, int mouseX, int mouseY) {
+		int formWidth = Math.min(this.contentWidth, 360);
+		int formX = this.contentX + (this.contentWidth - formWidth) / 2;
+		int y = TOP_BAR_HEIGHT + 16;
+
+		Theme.textScaled(ctx, this.font, Theme.bold("Settings"), formX, y, 1.5F, Theme.TEXT);
+		y += 24;
+
+		y = this.settingRow(ctx, this.soundsToggle, "Sound effects",
+				"Button clicks and the like chime.", Settings.sounds(), formX, y, formWidth, mouseX, mouseY);
+		y = this.settingRow(ctx, this.autoLoadToggle, "Load into Litematica after download",
+				"Open a schematic as soon as it finishes downloading.", Settings.autoLoad(),
+				formX, y, formWidth, mouseX, mouseY);
+		y = this.settingRow(ctx, this.overwriteToggle, "Confirm before overwriting",
+				"Ask first when a file of the same name already exists.", Settings.confirmOverwrite(),
+				formX, y, formWidth, mouseX, mouseY);
+
+		y += 6;
+		Theme.text(ctx, this.font, Theme.bold("Download folder"), formX, y, Theme.TEXT);
+		y += this.font.lineHeight + 3;
+
+		for (String row : this.wrap(Settings.downloadDirectory().toString(), formWidth, 2)) {
+			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_MUTE);
+			y += this.font.lineHeight + 1;
+		}
+
+		y += 3;
+		int openWidth = this.font.width(Theme.bold("Open folder")) + 16;
+		this.openFolderButton.set(formX, y, openWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.openFolderButton, "Open folder", mouseX, mouseY, false);
+		y += FIELD_HEIGHT + 8;
+
+		for (String row : this.wrap("Downloads follow the Minecraft session you launched, so files always land "
+				+ "in the profile you are actually playing - there is no path to keep in sync.", formWidth, 3)) {
+			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
+			y += this.font.lineHeight + 1;
+		}
+	}
+
+	private int settingRow(GuiGraphics ctx, Rect rect, String label, String hint, boolean on,
+			int x, int y, int width, int mouseX, int mouseY) {
+		rect.set(x, y, width, FIELD_HEIGHT);
+		this.toggle(ctx, rect, label, on, mouseX, mouseY);
+		y += FIELD_HEIGHT + 3;
+		Theme.text(ctx, this.font, hint, x, y, Theme.TEXT_ASH);
+		return y + this.font.lineHeight + 9;
+	}
+
 	// ------------------------------------------------------------------ detail modal
 
 	private void renderDetail(GuiGraphics ctx, int mouseX, int mouseY) {
@@ -836,13 +1030,13 @@ public class IndexScreen extends Screen {
 		float fade = Math.min(1.0F, Math.max(0.0F, open / 140.0F));
 		ctx.fill(0, 0, this.width, this.height, ((int) (0x99 * fade) << 24));
 
-		// The model view earns its space: the panel grows by a quarter and the render takes most of
-		// the extra, since the metadata column needs no more room than it already has.
-		int modalWidth = Math.min(this.contentWidth, this.detailModel ? 550 : 440);
-		int modalHeight = Math.min(this.height - 24, this.detailModel ? 290 : 232);
+		// Post menus run larger across the board, and the picture and model views each take a further
+		// quarter again - the render earns the extra room, the metadata column does not need it.
+		int modalWidth = Math.min(this.contentWidth, this.detailModel ? 688 : 550);
+		int modalHeight = Math.min(this.height - 24, this.detailModel ? 362 : 290);
 		int x = (this.width - modalWidth) / 2;
 		int y = (this.height - modalHeight) / 2;
-		int pad = 10;
+		int pad = 12;
 
 		Theme.roundedRect(ctx, x, y, modalWidth, modalHeight, Theme.RADIUS_MODAL, Theme.SURFACE_ELEVATED);
 
@@ -851,7 +1045,7 @@ public class IndexScreen extends Screen {
 
 		if (this.detailModel) {
 			SchematicPreview.request(entry.schematicSlot(), this.detailYaw, this.detailPitch, this.detailZoom,
-					this.cutaway, this.freeLook, this.freeEye);
+					this.cutaway, this.freeLook, this.freeEye, this.detailLayer);
 			Identifier model = SchematicPreview.texture(entry.schematicSlot());
 
 			if (model != null) {
@@ -910,7 +1104,7 @@ public class IndexScreen extends Screen {
 		int ageWidth = this.font.width(age);
 		Theme.text(ctx, this.font, age, x + modalWidth - pad - ageWidth, y + pad, Theme.TEXT_ASH);
 
-		Theme.text(ctx, this.font, Theme.bold(Theme.clip(this.font, entry.title(), infoWidth - ageWidth - 6)),
+		Theme.text(ctx, this.font, Theme.bold(Theme.clipBold(this.font, entry.title(), infoWidth - ageWidth - 6)),
 				infoX, line, Theme.TEXT);
 		line += this.font.lineHeight + 4;
 		Theme.text(ctx, this.font, Theme.clip(this.font, "Posted by " + entry.poster(), infoWidth), infoX, line, Theme.TEXT_MUTE);
@@ -949,13 +1143,23 @@ public class IndexScreen extends Screen {
 
 			this.freeLookToggle.set(infoX, line, infoWidth, FIELD_HEIGHT);
 			this.toggle(ctx, this.freeLookToggle, "Look around", this.freeLook, mouseX, mouseY);
-			line += FIELD_HEIGHT + 4;
+			line += FIELD_HEIGHT + 6;
+
+			// Layer slider: peel off the top of the build to look inside without moving the camera.
+			String layerLabel = this.detailLayer >= 1.0F ? "All" : Math.round(this.detailLayer * 100) + "%";
+			Theme.text(ctx, this.font, "Layers", infoX, line, Theme.TEXT_ASH);
+			Theme.text(ctx, this.font, layerLabel, infoX + infoWidth - this.font.width(layerLabel), line, Theme.TEXT);
+			line += this.font.lineHeight + 3;
+			this.layerSlider.set(infoX, line, infoWidth, 10);
+			this.slider(ctx, this.layerSlider, this.detailLayer, mouseX, mouseY);
+			line += 10 + 6;
 
 			this.resetViewButton.set(infoX, line, infoWidth, FIELD_HEIGHT);
 			this.pillButton(ctx, this.resetViewButton, "Reset view", mouseX, mouseY, false);
 		} else {
 			this.cutawayToggle.set(0, 0, 0, 0);
 			this.freeLookToggle.set(0, 0, 0, 0);
+			this.layerSlider.set(0, 0, 0, 0);
 			this.resetViewButton.set(0, 0, 0, 0);
 		}
 
@@ -972,18 +1176,23 @@ public class IndexScreen extends Screen {
 		}
 
 		int buttonY = y + modalHeight - pad - 16;
-		int downloadWidth = this.font.width(Theme.bold("Download")) + 18;
+		// A little wider than the label so the progress fill and its percentage have room.
+		int downloadWidth = this.font.width(Theme.bold("Downloading")) + 18;
 		String previewLabel = this.detailModel ? "Pictures" : "3D preview";
 		int previewWidth = this.font.width(Theme.bold(previewLabel)) + 18;
 		int closeWidth = this.font.width(Theme.bold("Close")) + 18;
+		String saveLabel = isSaved(entry) ? "Saved" : "Save for later";
+		int saveWidth = this.font.width(Theme.bold(saveLabel)) + 18;
 
 		this.detailClose.set(x + pad, buttonY, closeWidth, 16);
+		this.detailSave.set(this.detailClose.x + closeWidth + 6, buttonY, saveWidth, 16);
 		this.detailDownload.set(x + modalWidth - pad - downloadWidth, buttonY, downloadWidth, 16);
 		this.detailPreview3d.set(this.detailDownload.x - 6 - previewWidth, buttonY, previewWidth, 16);
 
 		this.pillButton(ctx, this.detailClose, "Close", mouseX, mouseY, false);
+		this.saveButton(ctx, this.detailSave, isSaved(entry), mouseX, mouseY);
 		this.pillButton(ctx, this.detailPreview3d, previewLabel, mouseX, mouseY, false);
-		this.pillButton(ctx, this.detailDownload, "Download", mouseX, mouseY, true);
+		this.downloadButton(ctx, this.detailDownload, entry, mouseX, mouseY);
 	}
 
 	private int metaRow(GuiGraphics ctx, String label, String value, int x, int y, int width) {
@@ -1026,6 +1235,12 @@ public class IndexScreen extends Screen {
 		double mouseY = event.y();
 
 		if (this.detail != null) {
+			if (this.detailModel && this.layerSlider.contains(mouseX, mouseY)) {
+				this.draggingLayer = true;
+				this.setLayerFromMouse(mouseX);
+				return true;
+			}
+
 			if (this.detailModel && this.detailImageRect.contains(mouseX, mouseY)) {
 				this.orbiting = true;
 			}
@@ -1048,6 +1263,10 @@ public class IndexScreen extends Screen {
 
 		if (this.page == Page.UPLOAD) {
 			return this.clickUpload(event, doubleClick, mouseX, mouseY);
+		}
+
+		if (this.page == Page.SETTINGS) {
+			return this.clickSettings(mouseX, mouseY);
 		}
 
 		if (this.retryButton.contains(mouseX, mouseY)) {
@@ -1092,6 +1311,7 @@ public class IndexScreen extends Screen {
 				this.detailYaw = 35.0F;
 				this.detailPitch = 28.0F;
 				this.detailZoom = 1.0F;
+				this.detailLayer = 1.0F;
 				this.status = "";
 			}
 
@@ -1175,8 +1395,60 @@ public class IndexScreen extends Screen {
 		}
 
 		return this.focusField(this.titleBox, event, doubleClick, mouseX, mouseY)
+				|| this.focusField(this.thumbnailBox, event, doubleClick, mouseX, mouseY)
 				|| this.focusField(this.designerBox, event, doubleClick, mouseX, mouseY)
 				|| this.focusField(this.descriptionBox, event, doubleClick, mouseX, mouseY);
+	}
+
+	private boolean clickSettings(double mouseX, double mouseY) {
+		if (this.soundsToggle.contains(mouseX, mouseY)) {
+			Settings.toggleSounds();
+			// Plays only if sound is now on, which is its own confirmation.
+			Theme.click(1.2F);
+		} else if (this.autoLoadToggle.contains(mouseX, mouseY)) {
+			Settings.toggleAutoLoad();
+			Theme.click(1.1F);
+		} else if (this.overwriteToggle.contains(mouseX, mouseY)) {
+			Settings.toggleConfirmOverwrite();
+			Theme.click(1.1F);
+		} else if (this.openFolderButton.contains(mouseX, mouseY)) {
+			Theme.click();
+			this.openDownloadFolder();
+		}
+
+		return true;
+	}
+
+	private void openDownloadFolder() {
+		try {
+			Path directory = Settings.downloadDirectory();
+			Files.createDirectories(directory);
+			Util.getPlatform().openPath(directory);
+		} catch (Throwable e) {
+			SchematicIndexMod.LOGGER.warn("Could not open the download folder", e);
+		}
+	}
+
+	private void setLayerFromMouse(double mouseX) {
+		if (this.layerSlider.width <= 0) {
+			return;
+		}
+
+		float fraction = (float) ((mouseX - this.layerSlider.x) / this.layerSlider.width);
+		this.detailLayer = Math.max(0.05F, Math.min(1.0F, fraction));
+	}
+
+	private void startDownload(SchematicEntry entry) {
+		Theme.click(1.2F);
+		Path source = SchematicPreview.pathFor(entry.schematicSlot());
+
+		if (source == null) {
+			this.status = "No local file to download in this beta.";
+			return;
+		}
+
+		Download.start(entry.id(), entry.title() + ".litematic", null, source);
+		this.status = "Downloading into your schematics folder...";
 	}
 
 	private boolean focusField(EditBox box, MouseButtonEvent event, boolean doubleClick, double mouseX, double mouseY) {
@@ -1210,11 +1482,13 @@ public class IndexScreen extends Screen {
 
 		String designer = this.designerBox.getValue().trim();
 		String description = this.descriptionBox.getValue().trim();
+		String thumbnailName = this.thumbnailBox.getValue().trim();
 		int size = 12 + Math.abs(title.hashCode() % 30);
 
 		SchematicEntry entry = new SchematicEntry(
 				MockCatalogue.nextPostId(),
 				title,
+				thumbnailName.isEmpty() ? title : thumbnailName,
 				String.valueOf(UploaderAccess.profile()),
 				designer.isEmpty() ? "unknown" : designer,
 				this.formCategory,
@@ -1236,6 +1510,7 @@ public class IndexScreen extends Screen {
 		this.formPicturePreview = 0;
 		this.formSchematic = null;
 		this.titleBox.setValue("");
+		this.thumbnailBox.setValue("");
 		this.designerBox.setValue("");
 		this.descriptionBox.setValue("");
 		this.formStatus = "Posted \"" + title + "\" - beta only, it lives in memory until you quit.";
@@ -1351,9 +1626,10 @@ public class IndexScreen extends Screen {
 		} else if (this.resetViewButton.contains(mouseX, mouseY)) {
 			Theme.click();
 			this.resetCamera();
+		} else if (this.detailSave.contains(mouseX, mouseY)) {
+			toggleSaved(entry);
 		} else if (this.detailDownload.contains(mouseX, mouseY)) {
-			Theme.click(1.2F);
-			this.status = "No catalogue server configured yet.";
+			this.startDownload(entry);
 		} else if (this.detailPreview3d.contains(mouseX, mouseY)) {
 			Theme.click(1.2F);
 			this.detailModel = !this.detailModel;
@@ -1365,6 +1641,7 @@ public class IndexScreen extends Screen {
 		this.detailYaw = 35.0F;
 		this.detailPitch = 28.0F;
 		this.detailZoom = 1.0F;
+		this.detailLayer = 1.0F;
 		this.freeLook = false;
 		this.freeEye = null;
 		this.status = "";
@@ -1428,6 +1705,11 @@ public class IndexScreen extends Screen {
 
 	@Override
 	public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
+		if (this.draggingLayer && this.detail != null && this.detailModel) {
+			this.setLayerFromMouse(event.x());
+			return true;
+		}
+
 		// Orbiting continues while the button is held, even once the cursor leaves the preview -
 		// otherwise a fast drag stops dead at the panel edge.
 		if (this.orbiting && this.detail != null && this.detailModel) {
@@ -1444,6 +1726,7 @@ public class IndexScreen extends Screen {
 	@Override
 	public boolean mouseReleased(MouseButtonEvent event) {
 		this.orbiting = false;
+		this.draggingLayer = false;
 		return super.mouseReleased(event);
 	}
 
