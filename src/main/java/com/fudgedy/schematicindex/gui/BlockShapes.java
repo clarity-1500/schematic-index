@@ -15,6 +15,7 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.jetbrains.annotations.Nullable;
@@ -131,11 +132,35 @@ public final class BlockShapes {
 				// from that outline instead and skin them with the right texture.
 				fromOutline(quads, state, model.particleIcon().contents().name());
 			}
+
+			// Waterlogged stairs, slabs, fences and the like sit in water in game. This raycaster has
+			// no translucency - the nearest opaque surface wins - so a real water volume would just
+			// occlude the block as a solid blue cube. Instead the block's own faces get a blue wash,
+			// which reads as "submerged" without hiding the geometry.
+			if (isWaterlogged(state)) {
+				washBlue(quads);
+			}
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.debug("No model geometry for {}", state, e);
 		}
 
 		return new Raw(quads, false);
+	}
+
+	private static boolean isWaterlogged(BlockState state) {
+		return state.hasProperty(BlockStateProperties.WATERLOGGED)
+				&& state.getValue(BlockStateProperties.WATERLOGGED);
+	}
+
+	/** A light blue tint over every quad, so a waterlogged block reads as submerged. */
+	private static final int WATER_WASH = 0xFFA6C6E6;
+
+	private static void washBlue(List<RawQuad> quads) {
+		for (int i = 0; i < quads.size(); i++) {
+			RawQuad quad = quads.get(i);
+			quads.set(i, new RawQuad(quad.xs(), quad.ys(), quad.zs(), quad.us(), quad.vs(),
+					quad.texture(), quad.face(), BlockTextures.tint(quad.tint(), WATER_WASH)));
+		}
 	}
 
 	private static void collect(List<RawQuad> out, List<BakedQuad> quads, BlockState state) {
@@ -245,6 +270,11 @@ public final class BlockShapes {
 
 	private static void addFace(List<RawQuad> out, Identifier texture, Direction direction,
 			float @Nullable [] region, float[] xs, float[] ys, float[] zs) {
+		addFace(out, texture, direction, region, BlockTextures.NO_TINT, xs, ys, zs);
+	}
+
+	private static void addFace(List<RawQuad> out, Identifier texture, Direction direction,
+			float @Nullable [] region, int tint, float[] xs, float[] ys, float[] zs) {
 		// Planar UVs: map the two axes the face spans straight onto the texture.
 		float[] us = new float[4];
 		float[] vs = new float[4];
@@ -272,7 +302,7 @@ public final class BlockShapes {
 			}
 		}
 
-		out.add(new RawQuad(xs, ys, zs, us, vs, texture, direction.ordinal(), BlockTextures.NO_TINT));
+		out.add(new RawQuad(xs, ys, zs, us, vs, texture, direction.ordinal(), tint));
 	}
 
 	private static float normalise(float value, float min, float max) {

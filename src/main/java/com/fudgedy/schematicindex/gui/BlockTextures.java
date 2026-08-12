@@ -98,7 +98,8 @@ public final class BlockTextures {
 	 * Water's blue does not come from the block colour system - the fluid renderer applies it from
 	 * the biome - so it has to be supplied here or water renders as the grey texture it ships as.
 	 */
-	private static final int DEFAULT_WATER = 0xFF3F76E4;
+	public static final int WATER_TINT = 0xFF3F76E4;
+	private static final int DEFAULT_WATER = WATER_TINT;
 
 	/** Render thread only - reads the baked model registry and the block colour providers. */
 	public static Resolved resolveSprites(BlockState state) {
