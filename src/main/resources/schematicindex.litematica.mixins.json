@@ -6,7 +6,8 @@
   "mixins": [],
   "client": [
     "GuiHudMixin",
-    "LitematicaMainMenuMixin"
+    "LitematicaMainMenuMixin",
+    "TitleScreenMixin"
   ],
   "server": [],
   "injectors": {

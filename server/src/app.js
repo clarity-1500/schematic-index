@@ -1,5 +1,6 @@
 import express from 'express';
 import { db } from './db.js';
+import { config } from './config.js';
 import { registerReadRoutes } from './read.js';
 import { registerInteractionRoutes } from './interactions.js';
 import { registerUploadRoutes } from './upload.js';
@@ -17,6 +18,15 @@ export function createApp() {
   app.get('/health', (req, res) => {
     const posts = db.prepare('SELECT COUNT(*) AS n FROM posts').get().n;
     res.json({ ok: true, service: 'schematic-index', version: '0.1.0', posts });
+  });
+
+  app.get('/version', (req, res) => {
+    res.json({
+      minVersion: config.modMinVersion,
+      latestVersion: config.modLatestVersion,
+      message: config.modUpdateMessage,
+      modrinth: config.modrinthProject,
+    });
   });
 
   registerReadRoutes(app);

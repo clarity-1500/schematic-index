@@ -11,6 +11,7 @@ public class SchematicIndexMod implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		Settings.load();
+		UpdateGate.checkAsync();
 		LOGGER.info("The Schematic Index loaded (catalogue: {})",
 				Settings.hasApiBaseUrl() ? Settings.apiBaseUrl() : "not configured");
 	}

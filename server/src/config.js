@@ -8,6 +8,11 @@ export const config = {
 
   publicBase: (process.env.PUBLIC_BASE || 'http://localhost:8080').replace(/\/+$/, ''),
   discordWebhook: process.env.DISCORD_WEBHOOK || '',
+
+  modMinVersion: process.env.MOD_MIN_VERSION || '0.0.0',
+  modLatestVersion: process.env.MOD_LATEST_VERSION || '',
+  modUpdateMessage: process.env.MOD_UPDATE_MESSAGE || '',
+  modrinthProject: process.env.MODRINTH_PROJECT || '',
 };
 
 export const paths = {

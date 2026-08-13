@@ -1,5 +1,6 @@
 package com.fudgedy.schematicindex.mixin;
 
+import com.fudgedy.schematicindex.UpdateGate;
 import com.fudgedy.schematicindex.gui.IndexIcon;
 import com.fudgedy.schematicindex.gui.IndexScreen;
 import fi.dy.masa.litematica.gui.GuiMainMenu;
@@ -25,10 +26,19 @@ public abstract class LitematicaMainMenuMixin extends GuiBase {
 		int buttonWidth = schematicindex$columnWidth();
 		int x = 12 + buttonWidth + 20;
 
-		ButtonGeneric button = new ButtonGeneric(x, 52, buttonWidth, 20, SCHEMATICINDEX$LABEL, IndexIcon.INSTANCE);
+		boolean locked = UpdateGate.locked();
+		ButtonGeneric button = locked
+				? new ButtonGeneric(x, 52, buttonWidth, 20, SCHEMATICINDEX$LABEL, IndexIcon.INSTANCE,
+						"Please install version " + UpdateGate.requiredVersion() + " from Modrinth")
+				: new ButtonGeneric(x, 52, buttonWidth, 20, SCHEMATICINDEX$LABEL, IndexIcon.INSTANCE);
 		button.setTextCentered(false);
 		button.setIconAlignment(LeftRight.LEFT);
+		button.setEnabled(!locked);
 		this.addButton(button, (pressed, mouseButton) -> {
+			if (UpdateGate.locked()) {
+				return;
+			}
+
 			Minecraft client = Minecraft.getInstance();
 			client.setScreen(new IndexScreen(this));
 		});
