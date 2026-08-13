@@ -138,10 +138,23 @@ public final class SchematicPreview {
 		return URL_BASE + index;
 	}
 
+	private static synchronized @Nullable String urlAt(int i) {
+		return i >= 0 && i < URLS.size() ? URLS.get(i) : null;
+	}
+
+	private static synchronized @Nullable Path urlFileAt(int i) {
+		return i >= 0 && i < URL_FILES.size() ? URL_FILES.get(i) : null;
+	}
+
+	private static synchronized void setUrlFile(int i, Path file) {
+		if (i >= 0 && i < URL_FILES.size()) {
+			URL_FILES.set(i, file);
+		}
+	}
+
 	private static @Nullable Path fileFor(int slot) {
 		if (slot >= URL_BASE) {
-			int i = slot - URL_BASE;
-			return i >= 0 && i < URL_FILES.size() ? URL_FILES.get(i) : null;
+			return urlFileAt(slot - URL_BASE);
 		}
 
 		if (slot >= PICKED_BASE) {
@@ -158,8 +171,7 @@ public final class SchematicPreview {
 
 	private static boolean hasSource(int index) {
 		if (index >= URL_BASE) {
-			int i = index - URL_BASE;
-			return i >= 0 && i < URLS.size();
+			return urlAt(index - URL_BASE) != null;
 		}
 
 		return fileFor(index) != null;
@@ -180,9 +192,8 @@ public final class SchematicPreview {
 
 	public static String name(int slot) {
 		if (slot >= URL_BASE) {
-			int i = slot - URL_BASE;
-			String url = i >= 0 && i < URLS.size() ? URLS.get(i) : "";
-			String file = url.substring(url.lastIndexOf('/') + 1);
+			String url = urlAt(slot - URL_BASE);
+			String file = url == null ? "" : url.substring(url.lastIndexOf('/') + 1);
 			return file.endsWith(".litematic") ? file.substring(0, file.length() - 10) : file;
 		}
 
@@ -202,12 +213,13 @@ public final class SchematicPreview {
 		}
 
 		int i = slot - URL_BASE;
+		String url = urlAt(i);
 
-		if (i < 0 || i >= URLS.size()) {
+		if (url == null) {
 			return null;
 		}
 
-		Path cached = URL_FILES.get(i);
+		Path cached = urlFileAt(i);
 
 		if (cached != null && Files.exists(cached)) {
 			return cached;
@@ -216,13 +228,13 @@ public final class SchematicPreview {
 		try {
 			Path dir = FabricLoader.getInstance().getGameDir().resolve(SchematicIndexMod.MOD_ID).resolve("schcache");
 			Files.createDirectories(dir);
-			Path file = dir.resolve(Integer.toHexString(URLS.get(i).hashCode()) + ".litematic");
+			Path file = dir.resolve(Integer.toHexString(url.hashCode()) + ".litematic");
 
-			if (!Backend.download(URLS.get(i), file)) {
+			if (!Backend.download(url, file)) {
 				return null;
 			}
 
-			URL_FILES.set(i, file);
+			setUrlFile(i, file);
 			return file;
 		} catch (Exception e) {
 			SchematicIndexMod.LOGGER.warn("Could not cache preview file", e);
@@ -273,6 +285,9 @@ public final class SchematicPreview {
 			load(index);
 			return;
 		}
+
+		MODEL_ORDER.remove(Integer.valueOf(index));
+		MODEL_ORDER.add(index);
 
 		double[] from = eye != null ? eye
 				: (freeLook ? eye(MODELS.get(index), index, yaw, pitch, zoom, cutaway) : null);
@@ -388,6 +403,11 @@ public final class SchematicPreview {
 
 			if (oldest == keep) {
 				MODEL_ORDER.add(oldest);
+
+				if (MODEL_ORDER.size() <= 1) {
+					break;
+				}
+
 				continue;
 			}
 
@@ -483,6 +503,10 @@ public final class SchematicPreview {
 						Integer palette = indices.get(state);
 
 						if (palette == null) {
+							if (states.size() >= 65535) {
+								continue;
+							}
+
 							palette = states.size();
 							indices.put(state, palette);
 							states.add(state);
@@ -520,10 +544,30 @@ public final class SchematicPreview {
 	}
 
 	private static NativeImage rasterise(Model model, View view, @Nullable NativeImage buffer) {
-		NativeImage image = buffer != null && buffer.getWidth() == WIDTH && buffer.getHeight() == HEIGHT
-				? buffer
-				: new NativeImage(NativeImage.Format.RGBA, WIDTH, HEIGHT, false);
+		NativeImage image;
 
+		if (buffer != null && buffer.getWidth() == WIDTH && buffer.getHeight() == HEIGHT) {
+			image = buffer;
+		} else {
+			if (buffer != null) {
+				buffer.close();
+			}
+
+			image = new NativeImage(NativeImage.Format.RGBA, WIDTH, HEIGHT, false);
+		}
+
+		try {
+			return renderInto(image, model, view);
+		} catch (Throwable e) {
+			if (image != buffer) {
+				image.close();
+			}
+
+			throw e;
+		}
+	}
+
+	private static NativeImage renderInto(NativeImage image, Model model, View view) {
 		double yaw = Math.toRadians(view.yaw());
 		double pitch = Math.toRadians(view.pitch());
 		double sinYaw = Math.sin(yaw);

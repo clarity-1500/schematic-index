@@ -124,15 +124,23 @@ export function registerUploadRoutes(app) {
       return key;
     });
 
-    insertPost.run(
-      id, title, String(meta.thumbnailName || '').trim() || null, req.uploaderCode.display_name,
-      String(meta.designer || '').trim() || null, category, dims.x, dims.y, dims.z, dims.blocks,
-      Date.now(), String(meta.description || '').trim() || null, imageKeys[0], fileKey, fileHash,
-      schematic.buffer.length, req.uploaderCode.id, (req.get('X-Device-Token') || '').trim() || null,
-      req.ip || null,
-    );
+    db.exec('BEGIN');
 
-    imageKeys.forEach((key, i) => insertImage.run(id, i, key));
+    try {
+      insertPost.run(
+        id, title, String(meta.thumbnailName || '').trim() || null, req.uploaderCode.display_name,
+        String(meta.designer || '').trim() || null, category, dims.x, dims.y, dims.z, dims.blocks,
+        Date.now(), String(meta.description || '').trim() || null, imageKeys[0], fileKey, fileHash,
+        schematic.buffer.length, req.uploaderCode.id, (req.get('X-Device-Token') || '').trim() || null,
+        req.ip || null,
+      );
+
+      imageKeys.forEach((key, i) => insertImage.run(id, i, key));
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
 
     const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(id);
     res.status(201).json(serializePost(row, ''));

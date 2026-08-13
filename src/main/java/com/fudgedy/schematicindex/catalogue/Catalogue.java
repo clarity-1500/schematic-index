@@ -5,7 +5,11 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class Catalogue {
 	public enum State {
@@ -38,7 +42,8 @@ public final class Catalogue {
 	private static volatile State state = State.LOADING;
 	private static volatile boolean started;
 	private static volatile List<SchematicEntry> posts = List.of();
-	private static volatile long revision;
+	private static final AtomicLong REVISION = new AtomicLong();
+	private static final AtomicBoolean FETCHING = new AtomicBoolean();
 
 	private Catalogue() {
 	}
@@ -52,12 +57,32 @@ public final class Catalogue {
 	}
 
 	public static long revision() {
-		return revision;
+		return REVISION.get();
 	}
 
 	private static void setPosts(List<SchematicEntry> next) {
+		List<SchematicEntry> previous = posts;
 		posts = next;
-		revision++;
+		REVISION.incrementAndGet();
+		notifyNewPosts(previous, next);
+	}
+
+	private static void notifyNewPosts(List<SchematicEntry> previous, List<SchematicEntry> next) {
+		if (previous.isEmpty()) {
+			return;
+		}
+
+		Set<String> known = new HashSet<>();
+
+		for (SchematicEntry entry : previous) {
+			known.add(entry.id());
+		}
+
+		for (SchematicEntry entry : next) {
+			if (!known.contains(entry.id())) {
+				Follows.notifyForPost(entry);
+			}
+		}
 	}
 
 	public static void ensureLoaded() {
@@ -81,6 +106,10 @@ public final class Catalogue {
 			return;
 		}
 
+		if (!FETCHING.compareAndSet(false, true)) {
+			return;
+		}
+
 		if (!soft) {
 			state = State.LOADING;
 		}
@@ -97,6 +126,8 @@ public final class Catalogue {
 				if (!soft) {
 					state = State.OFFLINE;
 				}
+			} finally {
+				FETCHING.set(false);
 			}
 		}, "schematicindex-catalogue");
 		worker.setDaemon(true);

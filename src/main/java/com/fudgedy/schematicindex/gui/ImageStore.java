@@ -51,6 +51,7 @@ public final class ImageStore {
 		protected boolean removeEldestEntry(Map.Entry<String, Identifier> eldest) {
 			if (size() > MAX_IMAGES) {
 				Minecraft.getInstance().getTextureManager().release(eldest.getValue());
+				REQUESTED.remove(eldest.getKey());
 				return true;
 			}
 

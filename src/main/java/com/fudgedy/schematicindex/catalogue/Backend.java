@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -112,14 +113,16 @@ public final class Backend {
 	}
 
 	public static boolean download(String url, Path target) {
+		Path temporary = target.resolveSibling(target.getFileName() + ".part");
+
 		try {
 			Files.createDirectories(target.getParent());
-			Path temporary = target.resolveSibling(target.getFileName() + ".part");
 			HttpRequest request = HttpRequest.newBuilder(URI.create(url))
 					.timeout(Duration.ofSeconds(60))
 					.GET()
 					.build();
-			HttpResponse<Path> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofFile(temporary));
+			HttpResponse<Path> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofFile(temporary,
+					StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING));
 
 			if (response.statusCode() >= 400) {
 				Files.deleteIfExists(temporary);
@@ -130,6 +133,12 @@ public final class Backend {
 			return true;
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.debug("download {} failed", url, e);
+
+			try {
+				Files.deleteIfExists(temporary);
+			} catch (Exception ignored) {
+			}
+
 			return false;
 		}
 	}

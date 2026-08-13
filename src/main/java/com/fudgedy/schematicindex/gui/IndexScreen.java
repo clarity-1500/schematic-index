@@ -252,7 +252,10 @@ public class IndexScreen extends Screen {
 	protected void init() {
 		ImageStore.discover();
 		SchematicPreview.discover();
-		Catalogue.ensureLoaded();
+
+		if (Settings.termsAccepted()) {
+			Catalogue.ensureLoaded();
+		}
 
 		int available = this.width - RAIL_WIDTH - OUTER_MARGIN * 2;
 		this.contentWidth = Math.min(available, CONTENT_MAX_WIDTH);
@@ -406,6 +409,10 @@ public class IndexScreen extends Screen {
 	}
 
 	private void refilter() {
+		this.refilter(false);
+	}
+
+	private void refilter(boolean keepView) {
 		this.visible.clear();
 		String needle = this.query.trim().toLowerCase(Locale.ROOT);
 
@@ -435,7 +442,7 @@ public class IndexScreen extends Screen {
 		};
 		this.visible.sort(comparator);
 
-		this.shownCount = PAGE_SIZE;
+		this.shownCount = keepView ? Math.max(PAGE_SIZE, this.shownCount) : PAGE_SIZE;
 		this.recomputeScrollBounds();
 	}
 
@@ -523,7 +530,7 @@ public class IndexScreen extends Screen {
 
 		if (Catalogue.revision() != this.catalogueRevision) {
 			this.catalogueRevision = Catalogue.revision();
-			this.refilter();
+			this.refilter(true);
 		}
 
 		this.renderBackground(ctx, mouseX, mouseY, partialTick);
@@ -663,6 +670,7 @@ public class IndexScreen extends Screen {
 			Settings.acceptTerms();
 			this.tosOpen = false;
 			Theme.click(1.2F);
+			Catalogue.ensureLoaded();
 			this.maybeStartTutorial();
 		} else if (this.tosDecline.contains(mouseX, mouseY)) {
 			Settings.revokeTerms();
@@ -983,6 +991,10 @@ public class IndexScreen extends Screen {
 					} else if (progress.state() == Download.State.FAILED) {
 						Theme.failure();
 					}
+				}
+
+				if (progress.state() == Download.State.FAILED) {
+					this.detailDownloadLocked = false;
 				}
 
 				this.downloadStates.put(entry.id(), progress.state());
@@ -2006,7 +2018,7 @@ public class IndexScreen extends Screen {
 		for (String word : text.split(" ")) {
 			String candidate = current.isEmpty() ? word : current + " " + word;
 
-			if (this.font.width(candidate) > width) {
+			if (this.font.width(candidate) > width && !current.isEmpty()) {
 				lines.add(current.toString());
 				current = new StringBuilder(word);
 
@@ -2373,6 +2385,7 @@ public class IndexScreen extends Screen {
 			Download.start(entry.id(), entry.title() + ".litematic", null, source);
 		}
 
+		this.downloadStates.put(entry.id(), Download.State.RUNNING);
 		Backend.downloadAsync(entry.id());
 		this.detailDownloadLocked = true;
 		this.status = "Downloading into your schematics folder...";
