@@ -38,6 +38,7 @@ public final class Catalogue {
 	private static volatile State state = State.LOADING;
 	private static volatile boolean started;
 	private static volatile List<SchematicEntry> posts = List.of();
+	private static volatile long revision;
 
 	private Catalogue() {
 	}
@@ -50,32 +51,52 @@ public final class Catalogue {
 		return posts;
 	}
 
+	public static long revision() {
+		return revision;
+	}
+
+	private static void setPosts(List<SchematicEntry> next) {
+		posts = next;
+		revision++;
+	}
+
 	public static void ensureLoaded() {
 		if (started) {
+			refresh(true);
 			return;
 		}
 
 		started = true;
-		refresh();
+		refresh(false);
 	}
 
 	public static void refresh() {
-		state = State.LOADING;
+		refresh(false);
+	}
 
+	private static void refresh(boolean soft) {
 		if (!Backend.configured()) {
-			posts = List.of();
+			setPosts(List.of());
 			state = State.OFFLINE;
 			return;
 		}
 
+		if (!soft) {
+			state = State.LOADING;
+		}
+
 		Thread worker = new Thread(() -> {
 			try {
-				posts = fetchAll();
+				List<SchematicEntry> fetched = fetchAll();
+				setPosts(fetched);
 				NewsFeed.refresh();
 				state = State.READY;
 			} catch (Throwable e) {
 				SchematicIndexMod.LOGGER.info("Catalogue fetch failed: {}", e.toString());
-				state = State.OFFLINE;
+
+				if (!soft) {
+					state = State.OFFLINE;
+				}
 			}
 		}, "schematicindex-catalogue");
 		worker.setDaemon(true);

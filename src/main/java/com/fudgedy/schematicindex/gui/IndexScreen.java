@@ -94,6 +94,7 @@ public class IndexScreen extends Screen {
 	private Category category = Category.ALL;
 	private Catalogue.Sort sort = Catalogue.Sort.NEWEST;
 	private String query = "";
+	private long catalogueRevision = -1;
 
 	private int contentX;
 	private int contentWidth;
@@ -513,6 +514,12 @@ public class IndexScreen extends Screen {
 	public void render(GuiGraphics ctx, int mouseX, int mouseY, float partialTick) {
 		ImageStore.uploadPending();
 		SchematicPreview.uploadPending();
+
+		if (Catalogue.revision() != this.catalogueRevision) {
+			this.catalogueRevision = Catalogue.revision();
+			this.refilter();
+		}
+
 		this.renderBackground(ctx, mouseX, mouseY, partialTick);
 
 		boolean modalOpen = this.detail != null;
@@ -961,11 +968,15 @@ public class IndexScreen extends Screen {
 		String label = "Download";
 
 		if (progress != null) {
-			if (progress.state() != this.downloadStates.get(entry.id())) {
-				if (progress.state() == Download.State.DONE) {
-					Theme.success();
-				} else if (progress.state() == Download.State.FAILED) {
-					Theme.failure();
+			Download.State previous = this.downloadStates.get(entry.id());
+
+			if (progress.state() != previous) {
+				if (previous != null) {
+					if (progress.state() == Download.State.DONE) {
+						Theme.success();
+					} else if (progress.state() == Download.State.FAILED) {
+						Theme.failure();
+					}
 				}
 
 				this.downloadStates.put(entry.id(), progress.state());
