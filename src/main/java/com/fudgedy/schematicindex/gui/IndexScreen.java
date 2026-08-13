@@ -499,10 +499,16 @@ public class IndexScreen extends Screen {
 
 	private @Nullable Identifier thumbnailTexture(SchematicEntry entry) {
 		if (entry.thumbnailUrl() != null && !entry.thumbnailUrl().isBlank()) {
-			return ImageStore.texture(entry.thumbnailUrl());
+			return ImageStore.thumbnail(entry.thumbnailUrl());
 		}
 
-		return this.imageTexture(entry, 0);
+		List<String> urls = entry.imageUrls();
+
+		if (!urls.isEmpty()) {
+			return ImageStore.thumbnail(urls.get(0));
+		}
+
+		return ImageStore.thumbnail(imageSlot(entry, 0));
 	}
 
 	@Override

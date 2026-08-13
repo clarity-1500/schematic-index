@@ -29,6 +29,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Stream;
 
 public final class SchematicPreview {
@@ -57,15 +59,24 @@ public final class SchematicPreview {
 	private static final int URL_BASE = 2_000_000;
 	private static final List<String> URLS = new ArrayList<>();
 	private static final List<Path> URL_FILES = new ArrayList<>();
+	private static final Map<String, Integer> URL_INDEX = new HashMap<>();
 
 	private static final Map<Integer, Model> MODELS = new ConcurrentHashMap<>();
 	private static final Set<Integer> LOADING = new CopyOnWriteArraySet<>();
+	private static final Queue<Integer> MODEL_ORDER = new ConcurrentLinkedQueue<>();
 	private static final Queue<Frame> PENDING = new ConcurrentLinkedQueue<>();
+
+	private static final ExecutorService RENDERER = Executors.newSingleThreadExecutor(runnable -> {
+		Thread thread = new Thread(runnable, "schematicindex-preview");
+		thread.setDaemon(true);
+		return thread;
+	});
 
 	private static boolean scanned;
 
 	private static @Nullable Identifier viewId;
 	private static @Nullable DynamicTexture viewTexture;
+	private static @Nullable NativeImage scratch;
 	private static @Nullable View shown;
 	private static @Nullable View queued;
 	private static boolean rendering;
@@ -77,18 +88,18 @@ public final class SchematicPreview {
 	private record Frame(View view, @Nullable NativeImage image) {
 	}
 
-	private record Model(int[] cells, BlockShapes.Shape[] palette, int sizeX, int sizeY, int sizeZ,
+	private record Model(short[] cells, BlockShapes.Shape[] palette, int sizeX, int sizeY, int sizeZ,
 			double radius, double fitScale) {
 		int at(int x, int y, int z) {
 			if (x < 0 || y < 0 || z < 0 || x >= this.sizeX || y >= this.sizeY || z >= this.sizeZ) {
 				return 0;
 			}
 
-			return this.cells[(y * this.sizeZ + z) * this.sizeX + x];
+			return this.cells[(y * this.sizeZ + z) * this.sizeX + x] & 0xFFFF;
 		}
 	}
 
-	private record Draft(int[] cells, List<BlockState> states, int sizeX, int sizeY, int sizeZ) {
+	private record Draft(short[] cells, List<BlockState> states, int sizeX, int sizeY, int sizeZ) {
 	}
 
 	private SchematicPreview() {
@@ -114,15 +125,17 @@ public final class SchematicPreview {
 	}
 
 	public static synchronized int registerUrl(String url) {
-		int existing = URLS.indexOf(url);
+		Integer existing = URL_INDEX.get(url);
 
-		if (existing >= 0) {
+		if (existing != null) {
 			return URL_BASE + existing;
 		}
 
+		int index = URLS.size();
 		URLS.add(url);
 		URL_FILES.add(null);
-		return URL_BASE + URLS.size() - 1;
+		URL_INDEX.put(url, index);
+		return URL_BASE + index;
 	}
 
 	private static @Nullable Path fileFor(int slot) {
@@ -200,17 +213,15 @@ public final class SchematicPreview {
 			return cached;
 		}
 
-		byte[] bytes = Backend.getBytes(URLS.get(i));
-
-		if (bytes == null) {
-			return null;
-		}
-
 		try {
 			Path dir = FabricLoader.getInstance().getGameDir().resolve(SchematicIndexMod.MOD_ID).resolve("schcache");
 			Files.createDirectories(dir);
 			Path file = dir.resolve(Integer.toHexString(URLS.get(i).hashCode()) + ".litematic");
-			Files.write(file, bytes);
+
+			if (!Backend.download(URLS.get(i), file)) {
+				return null;
+			}
+
 			URL_FILES.set(i, file);
 			return file;
 		} catch (Exception e) {
@@ -292,16 +303,21 @@ public final class SchematicPreview {
 
 		queued = null;
 		rendering = true;
-		Thread worker = new Thread(() -> {
+		NativeImage buffer = scratch;
+		scratch = null;
+		RENDERER.execute(() -> {
 			try {
-				PENDING.add(new Frame(view, rasterise(model, view)));
+				PENDING.add(new Frame(view, rasterise(model, view, buffer)));
 			} catch (Throwable e) {
 				SchematicIndexMod.LOGGER.warn("Preview render failed", e);
+
+				if (buffer != null) {
+					buffer.close();
+				}
+
 				PENDING.add(new Frame(view, null));
 			}
-		}, "schematicindex-preview");
-		worker.setDaemon(true);
-		worker.start();
+		});
 	}
 
 	private static void load(int index) {
@@ -349,6 +365,8 @@ public final class SchematicPreview {
 				if (pair != null) {
 					MODELS.put(index, finish((Draft) pair[0], (BlockTextures.Resolved[]) pair[1],
 							(BlockShapes.Raw[]) pair[2]));
+					MODEL_ORDER.remove(index);
+					MODEL_ORDER.add(index);
 					evictModels(index);
 				}
 			} catch (Throwable e) {
@@ -361,12 +379,20 @@ public final class SchematicPreview {
 	}
 
 	private static void evictModels(int keep) {
-		if (MODELS.size() <= MAX_CACHED_MODELS) {
-			return;
-		}
+		while (MODELS.size() > MAX_CACHED_MODELS) {
+			Integer oldest = MODEL_ORDER.poll();
 
-		MODELS.keySet().removeIf(key -> key != keep);
-		BlockTextures.clear();
+			if (oldest == null) {
+				break;
+			}
+
+			if (oldest == keep) {
+				MODEL_ORDER.add(oldest);
+				continue;
+			}
+
+			MODELS.remove(oldest);
+		}
 	}
 
 	private static @Nullable Draft collect(LitematicaSchematic schematic) {
@@ -416,7 +442,7 @@ public final class SchematicPreview {
 		int sizeX = Math.max(1, spanX / step);
 		int sizeY = Math.max(1, spanY / step);
 		int sizeZ = Math.max(1, spanZ / step);
-		int[] cells = new int[sizeX * sizeY * sizeZ];
+		short[] cells = new short[sizeX * sizeY * sizeZ];
 
 		List<BlockState> states = new ArrayList<>();
 		Map<BlockState, Integer> indices = new HashMap<>();
@@ -462,7 +488,7 @@ public final class SchematicPreview {
 							states.add(state);
 						}
 
-						cells[(gy * sizeZ + gz) * sizeX + gx] = palette + 1;
+						cells[(gy * sizeZ + gz) * sizeX + gx] = (short) (palette + 1);
 					}
 				}
 			}
@@ -493,8 +519,10 @@ public final class SchematicPreview {
 		return new Model(draft.cells(), palette, draft.sizeX(), draft.sizeY(), draft.sizeZ(), radius, fitScale);
 	}
 
-	private static NativeImage rasterise(Model model, View view) {
-		NativeImage image = new NativeImage(NativeImage.Format.RGBA, WIDTH, HEIGHT, false);
+	private static NativeImage rasterise(Model model, View view, @Nullable NativeImage buffer) {
+		NativeImage image = buffer != null && buffer.getWidth() == WIDTH && buffer.getHeight() == HEIGHT
+				? buffer
+				: new NativeImage(NativeImage.Format.RGBA, WIDTH, HEIGHT, false);
 
 		double yaw = Math.toRadians(view.yaw());
 		double pitch = Math.toRadians(view.pitch());
@@ -588,21 +616,21 @@ public final class SchematicPreview {
 		double far = Double.MAX_VALUE;
 		int entryAxis = -1;
 
-		double[] origins = {originX, originY, originZ};
-		double[] directions = {dirX, dirY, dirZ};
-		int[] bounds = {model.sizeX(), model.sizeY(), model.sizeZ()};
-
 		for (int axis = 0; axis < 3; axis++) {
-			if (Math.abs(directions[axis]) < 1.0E-9D) {
-				if (origins[axis] < 0.0D || origins[axis] > bounds[axis]) {
+			double origin = axis == 0 ? originX : axis == 1 ? originY : originZ;
+			double direction = axis == 0 ? dirX : axis == 1 ? dirY : dirZ;
+			int bound = axis == 0 ? model.sizeX() : axis == 1 ? model.sizeY() : model.sizeZ();
+
+			if (Math.abs(direction) < 1.0E-9D) {
+				if (origin < 0.0D || origin > bound) {
 					return composite(accR, accG, accB, trans, BACKGROUND);
 				}
 
 				continue;
 			}
 
-			double first = (0.0D - origins[axis]) / directions[axis];
-			double second = (bounds[axis] - origins[axis]) / directions[axis];
+			double first = (0.0D - origin) / direction;
+			double second = (bound - origin) / direction;
 
 			if (first > second) {
 				double swap = first;
@@ -869,8 +897,12 @@ public final class SchematicPreview {
 				viewTexture.setPixels(frame.image());
 				viewTexture.upload();
 
-				if (previous != null) {
-					previous.close();
+				if (previous != null && previous != frame.image()) {
+					if (scratch != null) {
+						scratch.close();
+					}
+
+					scratch = previous;
 				}
 			}
 
@@ -890,6 +922,7 @@ public final class SchematicPreview {
 
 	public static void clearCache() {
 		MODELS.clear();
+		MODEL_ORDER.clear();
 		LOADING.clear();
 		BlockTextures.clear();
 	}
@@ -897,6 +930,11 @@ public final class SchematicPreview {
 	public static void releaseAll() {
 		if (viewId != null) {
 			Minecraft.getInstance().getTextureManager().release(viewId);
+		}
+
+		if (scratch != null) {
+			scratch.close();
+			scratch = null;
 		}
 
 		viewId = null;

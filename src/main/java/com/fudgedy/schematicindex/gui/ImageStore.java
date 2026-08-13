@@ -22,20 +22,22 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Stream;
 
 public final class ImageStore {
 	private static final int TARGET_WIDTH = 512;
 	private static final int TARGET_HEIGHT = 288;
+	private static final int THUMB_WIDTH = 256;
+	private static final int THUMB_HEIGHT = 144;
 	private static final int MAX_IMAGES = 64;
 	private static final int UPLOADS_PER_FRAME = 2;
 
@@ -44,9 +46,27 @@ public final class ImageStore {
 	private static final int PICKED_BASE = 1_000_000;
 	private static final List<Path> PICKED = new ArrayList<>();
 
-	private static final Map<String, Identifier> READY = new HashMap<>();
+	private static final Map<String, Identifier> READY = new LinkedHashMap<String, Identifier>(16, 0.75F, true) {
+		@Override
+		protected boolean removeEldestEntry(Map.Entry<String, Identifier> eldest) {
+			if (size() > MAX_IMAGES) {
+				Minecraft.getInstance().getTextureManager().release(eldest.getValue());
+				return true;
+			}
+
+			return false;
+		}
+	};
+
 	private static final Set<String> REQUESTED = ConcurrentHashMap.newKeySet();
 	private static final Queue<Decoded> PENDING = new ConcurrentLinkedQueue<>();
+
+	private static final ExecutorService DECODER = Executors.newFixedThreadPool(2, runnable -> {
+		Thread thread = new Thread(runnable, "schematicindex-image");
+		thread.setDaemon(true);
+		return thread;
+	});
+
 	private static int uploadCounter;
 
 	private static boolean scanned;
@@ -87,6 +107,14 @@ public final class ImageStore {
 	}
 
 	public static @Nullable Identifier texture(int index) {
+		return textureAt(index, TARGET_WIDTH, TARGET_HEIGHT, "f:");
+	}
+
+	public static @Nullable Identifier thumbnail(int index) {
+		return textureAt(index, THUMB_WIDTH, THUMB_HEIGHT, "t:");
+	}
+
+	private static @Nullable Identifier textureAt(int index, int width, int height, String prefix) {
 		int slot = index >= PICKED_BASE ? index : (FILES.isEmpty() ? -1 : Math.floorMod(index, FILES.size()));
 		Path file = fileFor(slot);
 
@@ -94,15 +122,23 @@ public final class ImageStore {
 			return null;
 		}
 
-		return request("local:" + slot, () -> decodeStream(Files.newInputStream(file)));
+		return request(prefix + "local:" + slot, () -> decodeStream(Files.newInputStream(file), width, height));
 	}
 
 	public static @Nullable Identifier texture(String ref) {
+		return textureAt(ref, TARGET_WIDTH, TARGET_HEIGHT, "f:");
+	}
+
+	public static @Nullable Identifier thumbnail(String ref) {
+		return textureAt(ref, THUMB_WIDTH, THUMB_HEIGHT, "t:");
+	}
+
+	private static @Nullable Identifier textureAt(String ref, int width, int height, String prefix) {
 		if (ref == null || ref.isBlank()) {
 			return null;
 		}
 
-		return request(ref, () -> loadReference(ref));
+		return request(prefix + ref, () -> loadReference(ref, width, height));
 	}
 
 	public static void preload(int start, int count) {
@@ -125,7 +161,7 @@ public final class ImageStore {
 		}
 
 		if (REQUESTED.add(key)) {
-			CompletableFuture.runAsync(() -> {
+			DECODER.execute(() -> {
 				try {
 					NativeImage image = loader.load();
 
@@ -144,7 +180,7 @@ public final class ImageStore {
 		return null;
 	}
 
-	private static @Nullable NativeImage loadReference(String ref) throws Exception {
+	private static @Nullable NativeImage loadReference(String ref, int width, int height) throws Exception {
 		byte[] bytes;
 
 		if (ref.startsWith("http://") || ref.startsWith("https://")) {
@@ -153,13 +189,13 @@ public final class ImageStore {
 			bytes = Files.readAllBytes(Path.of(ref));
 		}
 
-		return decodeStream(new ByteArrayInputStream(bytes));
+		return decodeStream(new ByteArrayInputStream(bytes), width, height);
 	}
 
-	private static NativeImage decodeStream(InputStream input) throws IOException {
+	private static NativeImage decodeStream(InputStream input, int targetWidth, int targetHeight) throws IOException {
 		try (input) {
 			NativeImage source = NativeImage.read(input);
-			NativeImage target = new NativeImage(source.format(), TARGET_WIDTH, TARGET_HEIGHT, false);
+			NativeImage target = new NativeImage(source.format(), targetWidth, targetHeight, false);
 
 			int cropWidth = source.getWidth();
 			int cropHeight = Math.round(cropWidth * 9.0F / 16.0F);
