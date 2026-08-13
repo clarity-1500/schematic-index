@@ -127,6 +127,35 @@ export function registerAdminRoutes(app) {
     res.status(201).json({ ok: true, code, displayName });
   });
 
+  app.post('/admin/api/codes/:id/update', owner, (req, res) => {
+    const id = Number(req.params.id);
+    const row = db.prepare('SELECT * FROM codes WHERE id = ?').get(id);
+
+    if (!row) {
+      return res.status(404).json({ error: 'not_found', message: 'No such code.' });
+    }
+
+    const newCode = String(req.body?.code ?? row.code).trim().toUpperCase();
+    const displayName = String(req.body?.displayName ?? row.display_name).trim();
+
+    if (!/^[A-Z0-9-]+$/.test(newCode)) {
+      return res.status(400).json({ error: 'bad_code', message: 'Code must be letters, numbers, or dashes.' });
+    }
+
+    if (!displayName) {
+      return res.status(400).json({ error: 'no_name', message: 'A display name is required.' });
+    }
+
+    const clash = db.prepare('SELECT id FROM codes WHERE code = ? AND id != ?').get(newCode, id);
+
+    if (clash) {
+      return res.status(409).json({ error: 'code_taken', message: 'That code is already in use.' });
+    }
+
+    db.prepare('UPDATE codes SET code = ?, display_name = ? WHERE id = ?').run(newCode, displayName, id);
+    res.json({ ok: true, code: newCode, displayName });
+  });
+
   app.post('/admin/api/codes/:code/revoke', owner, (req, res) => {
     const code = req.params.code;
     db.prepare('UPDATE codes SET revoked = 1 WHERE code = ?').run(code);

@@ -181,14 +181,44 @@ async function loadReports() {
 }
 async function dismiss(id){ await api('/admin/api/reports/'+id+'/dismiss',{method:'POST'}); loadReports(); toast('Dismissed'); }
 
+let codesById = {};
 async function loadCodes() {
   const { codes } = await (await api('/admin/api/codes')).json();
+  codesById = {};
+  codes.forEach(c => codesById[c.id] = c);
   document.querySelector('#codesTable tbody').innerHTML = codes.map(c => `
     <tr>
       <td class="mono">${esc(c.code)}</td><td>${esc(c.displayName)}</td>
       <td><span class="pill ${c.revoked?'warn':'on'}">${c.revoked?'revoked':'active'}</span></td>
-      <td>${c.revoked?'':`<button class="small danger" onclick="revoke('${c.code}')">Revoke</button>`}</td>
+      <td style="white-space:nowrap">
+        <button class="small" onclick="copyCode(${c.id})">Copy</button>
+        <button class="small" onclick="editCode(${c.id})">Edit</button>
+        ${c.revoked?'':`<button class="small danger" onclick="revoke(${c.id})">Revoke</button>`}
+      </td>
     </tr>`).join('') || '<tr><td colspan="4" class="muted">None.</td></tr>';
+}
+async function copyCode(id) {
+  const code = codesById[id]?.code; if (!code) return;
+  try { await navigator.clipboard.writeText(code); toast('Copied '+code); }
+  catch {
+    const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); toast('Copied '+code); } catch { toast('Copy failed'); }
+    document.body.removeChild(ta);
+  }
+}
+async function editCode(id) {
+  const c = codesById[id]; if (!c) return;
+  const rawCode = prompt('New code (letters, numbers, dashes):', c.code);
+  if (rawCode === null) return;
+  const code = rawCode.trim().toUpperCase();
+  if (!/^[A-Z0-9-]+$/.test(code)) { toast('Code must be letters, numbers, or dashes'); return; }
+  const rawName = prompt('Display name:', c.displayName);
+  if (rawName === null) return;
+  const displayName = rawName.trim();
+  if (!displayName) { toast('Name required'); return; }
+  const res = await api('/admin/api/codes/'+id+'/update', { method:'POST', body: JSON.stringify({ code, displayName }) });
+  const j = await res.json().catch(()=>({}));
+  if (res.ok) { loadCodes(); toast('Updated'); } else { toast(j.message || 'Update failed'); }
 }
 async function makeCode() {
   const name = v('c-name'); if(!name){ toast('Enter a name'); return; }
@@ -196,10 +226,12 @@ async function makeCode() {
   const j = await res.json();
   if (res.ok) { const e=document.getElementById('newCode'); e.textContent='New code for '+j.displayName+': '+j.code; e.classList.remove('hide'); document.getElementById('c-name').value=''; loadCodes(); }
 }
-async function revoke(code) {
+async function revoke(id) {
+  const c = codesById[id]; if (!c) return;
+  const code = c.code;
   if (!confirm('Revoke '+code+'? Optionally also hide all their posts.')) return;
   const deletePosts = confirm('Also hide every post uploaded with this code?');
-  await api('/admin/api/codes/'+code+'/revoke', { method:'POST', body: JSON.stringify({ deletePosts }) });
+  await api('/admin/api/codes/'+encodeURIComponent(code)+'/revoke', { method:'POST', body: JSON.stringify({ deletePosts }) });
   loadCodes(); loadPosts(); toast('Revoked');
 }
 
