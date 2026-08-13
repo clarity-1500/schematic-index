@@ -980,8 +980,11 @@ public class IndexScreen extends Screen {
 				if (previous != null) {
 					if (progress.state() == Download.State.DONE) {
 						Theme.success();
+						this.status = "";
 					} else if (progress.state() == Download.State.FAILED) {
 						Theme.failure();
+						this.status = "Download failed. Press Retry to try again.";
+						this.detailDownloadLocked = false;
 					}
 				}
 
@@ -1605,8 +1608,19 @@ public class IndexScreen extends Screen {
 						SchematicPreview.WIDTH, SchematicPreview.HEIGHT);
 			} else {
 				Theme.blueprintPlaceholder(ctx, x + pad, y + pad, imageWidth, imageHeight);
-				String message = SchematicPreview.hasSchematic(entry.schematicSlot())
-						? "Rendering..." : "No schematic files found";
+				int slot = entry.schematicSlot();
+				String message;
+
+				if (!SchematicPreview.hasSchematic(slot)) {
+					message = "No schematic files found";
+				} else if (SchematicPreview.failed(slot)) {
+					message = SchematicPreview.hosted(slot)
+							? "Can't connect. Click to retry."
+							: "Couldn't load preview. Click to retry.";
+				} else {
+					message = "Rendering" + ".".repeat((int) (System.currentTimeMillis() / 400 % 3) + 1);
+				}
+
 				Theme.text(ctx, this.font, message,
 						x + pad + (imageWidth - this.font.width(message)) / 2,
 						y + pad + imageHeight / 2 - 4, Theme.TEXT_MUTE);
@@ -1634,7 +1648,7 @@ public class IndexScreen extends Screen {
 		}
 
 		String caption = this.detailModel
-				? Theme.clip(this.font, SchematicPreview.name(entry.schematicSlot()), imageWidth - 16)
+				? ""
 				: (entry.imageCount() > 1 ? (this.detailImage + 1) + "/" + entry.imageCount() : "");
 
 		if (!caption.isEmpty()) {
@@ -2065,6 +2079,12 @@ public class IndexScreen extends Screen {
 			}
 
 			if (this.detailModel && this.detailImageRect.contains(mouseX, mouseY)) {
+				if (SchematicPreview.failed(this.detail.schematicSlot())) {
+					SchematicPreview.retry(this.detail.schematicSlot());
+					Theme.click(0.9F);
+					return true;
+				}
+
 				this.orbiting = true;
 			}
 
@@ -2375,7 +2395,8 @@ public class IndexScreen extends Screen {
 
 		Backend.downloadAsync(entry.id());
 		this.detailDownloadLocked = true;
-		this.status = "Downloading into your schematics folder...";
+		this.status = "Downloading the schematic into your selected folder...";
+		this.downloadStates.put(entry.id(), Download.State.RUNNING);
 	}
 
 	private boolean focusField(EditBox box, MouseButtonEvent event, boolean doubleClick, double mouseX, double mouseY) {

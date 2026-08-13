@@ -63,6 +63,7 @@ public final class SchematicPreview {
 
 	private static final Map<Integer, Model> MODELS = new ConcurrentHashMap<>();
 	private static final Set<Integer> LOADING = new CopyOnWriteArraySet<>();
+	private static final Set<Integer> FAILED = new CopyOnWriteArraySet<>();
 	private static final Queue<Integer> MODEL_ORDER = new ConcurrentLinkedQueue<>();
 	private static final Queue<Frame> PENDING = new ConcurrentLinkedQueue<>();
 
@@ -168,6 +169,22 @@ public final class SchematicPreview {
 	public static boolean hasSchematic(int slot) {
 		int index = normalise(slot);
 		return index >= 0 && hasSource(index);
+	}
+
+	public static boolean failed(int slot) {
+		return FAILED.contains(normalise(slot));
+	}
+
+	public static boolean hosted(int slot) {
+		return normalise(slot) >= URL_BASE;
+	}
+
+	public static void retry(int slot) {
+		int index = normalise(slot);
+
+		if (index >= 0) {
+			FAILED.remove(index);
+		}
 	}
 
 	private static int normalise(int slot) {
@@ -321,12 +338,13 @@ public final class SchematicPreview {
 	}
 
 	private static void load(int index) {
-		if (!LOADING.add(index)) {
+		if (FAILED.contains(index) || !LOADING.add(index)) {
 			return;
 		}
 
 		CompletableFuture.supplyAsync(() -> ensureLocal(index)).thenAccept(file -> {
 		if (file == null) {
+			FAILED.add(index);
 			LOADING.remove(index);
 			return;
 		}
@@ -368,9 +386,12 @@ public final class SchematicPreview {
 					MODEL_ORDER.remove(index);
 					MODEL_ORDER.add(index);
 					evictModels(index);
+				} else {
+					FAILED.add(index);
 				}
 			} catch (Throwable e) {
 				SchematicIndexMod.LOGGER.warn("Could not build model for {}", file.getFileName(), e);
+				FAILED.add(index);
 			} finally {
 				LOADING.remove(index);
 			}
@@ -924,6 +945,7 @@ public final class SchematicPreview {
 		MODELS.clear();
 		MODEL_ORDER.clear();
 		LOADING.clear();
+		FAILED.clear();
 		BlockTextures.clear();
 	}
 
