@@ -115,6 +115,7 @@ public final class Download {
 		byte[] buffer = new byte[16 * 1024];
 		long written = 0L;
 		int read;
+		int lastPercent = -1;
 
 		while ((read = input.read(buffer)) > 0) {
 			output.write(buffer, 0, read);
@@ -123,7 +124,12 @@ public final class Download {
 			float fraction = total > 0
 					? Math.min(1.0F, (float) written / total)
 					: 1.0F - 1.0F / (1.0F + written / 65_536.0F);
-			BY_POST.put(postId, new Progress(State.RUNNING, fraction, null));
+			int percent = (int) (fraction * 100.0F);
+
+			if (percent != lastPercent) {
+				lastPercent = percent;
+				BY_POST.put(postId, new Progress(State.RUNNING, fraction, null));
+			}
 		}
 	}
 
