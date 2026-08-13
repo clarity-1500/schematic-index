@@ -2153,6 +2153,7 @@ public class IndexScreen extends Screen {
 				}
 			} else {
 				this.detail = hit;
+				Backend.viewAsync(hit.id());
 
 				if (hit.imageUrls().isEmpty()) {
 					ImageStore.preload(hit.imageStart(), hit.imageCount());
@@ -2582,6 +2583,7 @@ public class IndexScreen extends Screen {
 		} else if (this.detailFollow.contains(mouseX, mouseY)) {
 			if (!Follows.isFollowing(entry.poster())) {
 				Follows.toggle(entry.poster());
+				Backend.followAsync(entry.id(), entry.poster());
 				Theme.follow();
 				Toasts.push("Followed " + entry.poster(), "You'll be notified whenever someone you follow, posts",
 						new ItemStack(Items.PLAYER_HEAD));
@@ -2592,6 +2594,7 @@ public class IndexScreen extends Screen {
 				Theme.click(0.9F);
 			} else {
 				Follows.toggle(entry.poster());
+				Backend.unfollowAsync(entry.poster());
 				Theme.click(0.8F);
 				this.followConfirm = false;
 			}

@@ -91,6 +91,25 @@ db.exec(`
     day      TEXT NOT NULL,
     PRIMARY KEY (post_id, token, day)
   );
+
+  -- One counted view per (post, token, day): unique daily viewers of a post.
+  CREATE TABLE IF NOT EXISTS views (
+    post_id  TEXT NOT NULL,
+    token    TEXT NOT NULL,
+    day      TEXT NOT NULL,
+    PRIMARY KEY (post_id, token, day)
+  );
+
+  -- One row per (follower, poster) pair, tagged with the post that drove the follow.
+  CREATE TABLE IF NOT EXISTS follows (
+    follower_token TEXT NOT NULL,
+    poster         TEXT NOT NULL,
+    post_id        TEXT,
+    created_at     INTEGER NOT NULL,
+    PRIMARY KEY (follower_token, poster)
+  );
+  CREATE INDEX IF NOT EXISTS idx_follows_poster ON follows(poster, created_at);
+  CREATE INDEX IF NOT EXISTS idx_follows_post ON follows(post_id, created_at);
 `);
 
 console.log(`[db] ready at ${paths.db}`);

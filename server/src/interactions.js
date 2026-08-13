@@ -15,6 +15,14 @@ const downloadCount = db.prepare('SELECT downloads FROM posts WHERE id = ?');
 const markDownload = db.prepare('INSERT OR IGNORE INTO downloads (post_id, token, day) VALUES (?, ?, ?)');
 const bumpDownloads = db.prepare('UPDATE posts SET downloads = downloads + 1 WHERE id = ?');
 
+const markView = db.prepare('INSERT OR IGNORE INTO views (post_id, token, day) VALUES (?, ?, ?)');
+
+const addFollow = db.prepare(`
+  INSERT INTO follows (follower_token, poster, post_id, created_at) VALUES (?, ?, ?, ?)
+  ON CONFLICT(follower_token, poster) DO UPDATE SET post_id = excluded.post_id, created_at = excluded.created_at
+`);
+const dropFollow = db.prepare('DELETE FROM follows WHERE follower_token = ? AND poster = ?');
+
 const existingReport = db.prepare('SELECT 1 FROM reports WHERE post_id = ? AND reporter_token = ?');
 const addReport = db.prepare(
   "INSERT INTO reports (post_id, reason, note, reporter_token, status, created_at) VALUES (?, ?, ?, ?, 'open', ?)",
@@ -29,6 +37,8 @@ export function registerInteractionRoutes(app) {
   const likeLimit = rateLimit({ name: 'like', windowMs: 60_000, max: 60 });
   const downloadLimit = rateLimit({ name: 'download', windowMs: 60_000, max: 30 });
   const reportLimit = rateLimit({ name: 'report', windowMs: 3_600_000, max: 5 });
+  const viewLimit = rateLimit({ name: 'view', windowMs: 60_000, max: 120 });
+  const followLimit = rateLimit({ name: 'follow', windowMs: 60_000, max: 60 });
 
   app.post('/like', likeLimit, (req, res) => {
     const id = postId(req);
@@ -72,6 +82,40 @@ export function registerInteractionRoutes(app) {
     }
 
     res.json({ downloads: downloadCount.get(id).downloads });
+  });
+
+  app.post('/view', viewLimit, (req, res) => {
+    const id = postId(req);
+
+    if (!visiblePost.get(id)) {
+      return res.status(404).json({ error: 'not_found', message: 'No such post.' });
+    }
+
+    const day = new Date().toISOString().slice(0, 10);
+    markView.run(id, req.deviceToken, day);
+    res.json({ ok: true });
+  });
+
+  app.post('/follow', followLimit, (req, res) => {
+    const poster = String(req.body?.poster || '').trim();
+
+    if (!poster) {
+      return res.status(400).json({ error: 'bad_poster', message: 'Missing poster.' });
+    }
+
+    addFollow.run(req.deviceToken, poster, postId(req) || null, Date.now());
+    res.json({ ok: true });
+  });
+
+  app.post('/unfollow', followLimit, (req, res) => {
+    const poster = String(req.body?.poster || '').trim();
+
+    if (!poster) {
+      return res.status(400).json({ error: 'bad_poster', message: 'Missing poster.' });
+    }
+
+    dropFollow.run(req.deviceToken, poster);
+    res.json({ ok: true });
   });
 
   app.post('/report', reportLimit, (req, res) => {

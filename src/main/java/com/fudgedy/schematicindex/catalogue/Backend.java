@@ -87,6 +87,21 @@ public final class Backend {
 		fireAndForget("/download", one("postId", postId));
 	}
 
+	public static void viewAsync(String postId) {
+		fireAndForget("/view", one("postId", postId));
+	}
+
+	public static void followAsync(String postId, String poster) {
+		JsonObject body = new JsonObject();
+		body.addProperty("postId", postId == null ? "" : postId);
+		body.addProperty("poster", poster);
+		fireAndForget("/follow", body.toString());
+	}
+
+	public static void unfollowAsync(String poster) {
+		fireAndForget("/unfollow", one("poster", poster));
+	}
+
 	public static void reportAsync(String postId, String reason, String note) {
 		JsonObject body = new JsonObject();
 		body.addProperty("postId", postId);

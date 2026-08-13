@@ -49,6 +49,58 @@ export function registerAdminRoutes(app) {
     res.json({ ok: true });
   });
 
+  app.get('/admin/api/posts/:id/stats', owner, (req, res) => {
+    const id = req.params.id;
+    const post = db.prepare('SELECT id, title, poster, downloads, likes FROM posts WHERE id = ?').get(id);
+
+    if (!post) {
+      return res.status(404).json({ error: 'not_found', message: 'No such post.' });
+    }
+
+    const days = Math.min(365, Math.max(7, Number(req.query.days) || 30));
+    const labels = [];
+    const index = {};
+    const now = Date.now();
+
+    for (let i = days - 1; i >= 0; i--) {
+      const day = new Date(now - i * 86400000).toISOString().slice(0, 10);
+      index[day] = labels.length;
+      labels.push(day);
+    }
+
+    const since = labels[0];
+    const sinceMs = Date.parse(since + 'T00:00:00.000Z');
+    const series = {
+      downloads: labels.map(() => 0),
+      views: labels.map(() => 0),
+      likes: labels.map(() => 0),
+      follows: labels.map(() => 0),
+    };
+
+    const fill = (arr, rows) => {
+      for (const r of rows) {
+        if (r.day in index) arr[index[r.day]] = r.n;
+      }
+    };
+
+    fill(series.downloads, db.prepare('SELECT day, COUNT(*) n FROM downloads WHERE post_id = ? AND day >= ? GROUP BY day').all(id, since));
+    fill(series.views, db.prepare('SELECT day, COUNT(*) n FROM views WHERE post_id = ? AND day >= ? GROUP BY day').all(id, since));
+    fill(series.likes, db.prepare("SELECT date(created_at/1000,'unixepoch') day, COUNT(*) n FROM likes WHERE post_id = ? AND created_at >= ? GROUP BY day").all(id, sinceMs));
+    fill(series.follows, db.prepare("SELECT date(created_at/1000,'unixepoch') day, COUNT(*) n FROM follows WHERE post_id = ? AND created_at >= ? GROUP BY day").all(id, sinceMs));
+
+    res.json({
+      post: { id: post.id, title: post.title, poster: post.poster },
+      days: labels,
+      series,
+      lifetime: {
+        downloads: post.downloads,
+        likes: post.likes,
+        views: db.prepare('SELECT COUNT(*) n FROM views WHERE post_id = ?').get(id).n,
+        follows: db.prepare('SELECT COUNT(*) n FROM follows WHERE post_id = ?').get(id).n,
+      },
+    });
+  });
+
   app.get('/admin/api/news', owner, (req, res) => {
     const rows = db.prepare('SELECT * FROM news ORDER BY posted_at DESC').all();
     res.json({
