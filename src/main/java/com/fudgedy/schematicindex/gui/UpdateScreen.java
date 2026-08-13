@@ -1,8 +1,8 @@
 package com.fudgedy.schematicindex.gui;
 
 import com.fudgedy.schematicindex.UpdateGate;
-import com.fudgedy.schematicindex.update.ModUpdater;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.screens.ConfirmLinkScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
@@ -12,11 +12,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class UpdateScreen extends Screen {
+	private static final String MODRINTH_URL = "https://modrinth.com/project/the-schematic-index";
+	private static final String LINK_LABEL = "modrinth.com/project/the-schematic-index";
+	private static final float TITLE_SCALE = 1.6F;
+
 	private final @Nullable Screen parent;
-	private final int[] updateRect = new int[4];
 	private final int[] skipRect = new int[4];
-	private volatile String status = "";
-	private boolean busy;
+	private final int[] linkRect = new int[4];
 
 	public UpdateScreen(@Nullable Screen parent) {
 		super(Component.literal("Update Required"));
@@ -24,16 +26,7 @@ public class UpdateScreen extends Screen {
 	}
 
 	@Override
-	public boolean shouldCloseOnEsc() {
-		return !this.busy;
-	}
-
-	@Override
 	public void onClose() {
-		if (this.busy) {
-			return;
-		}
-
 		UpdateGate.dismiss();
 		this.minecraft.setScreen(this.parent);
 	}
@@ -42,89 +35,98 @@ public class UpdateScreen extends Screen {
 	public void render(GuiGraphics ctx, int mouseX, int mouseY, float partialTick) {
 		ctx.fill(0, 0, this.width, this.height, Theme.BACKDROP);
 
-		int cardWidth = 328;
-		int cardHeight = 168;
+		int pad = 16;
+		int cardWidth = 336;
+		int innerWidth = cardWidth - pad * 2;
+		int buttonHeight = 18;
+		int titleHeight = Math.round(this.font.lineHeight * TITLE_SCALE);
+		int lineHeight = this.font.lineHeight;
+
+		String body = UpdateGate.message().isBlank()
+				? "Please install the latest mod version from Modrinth."
+				: UpdateGate.message();
+		String note = "Pressing \"Skip\" disables the mod until the latest version is installed.";
+		String versions = "You are running version " + UpdateGate.currentVersion();
+
+		List<String> bodyLines = this.wrap(body, innerWidth);
+		List<String> noteLines = this.wrap(note, innerWidth);
+
+		int cardHeight = pad
+				+ titleHeight + 6
+				+ lineHeight + 10
+				+ bodyLines.size() * (lineHeight + 2)
+				+ 5 + lineHeight
+				+ 6 + lineHeight
+				+ 8 + noteLines.size() * (lineHeight + 1)
+				+ 12 + buttonHeight
+				+ pad;
+
 		int x = (this.width - cardWidth) / 2;
 		int y = (this.height - cardHeight) / 2;
-		int pad = 16;
 		int cx = x + cardWidth / 2;
 
 		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_ELEVATED);
 
-		String title = Theme.bold("Update Required");
-		Theme.text(ctx, this.font, title, cx - this.font.width(title) / 2, y + pad, Theme.TEXT);
+		int line = y + pad;
 
-		int line = y + pad + 18;
-		String body = UpdateGate.message().isBlank()
-				? "The Schematic Index needs to update to stay in sync with the server."
-				: UpdateGate.message();
+		String name = Theme.bold("The Schematic Index");
+		int nameWidth = Math.round(this.font.width(name) * TITLE_SCALE);
+		Theme.textScaled(ctx, this.font, name, cx - nameWidth / 2, line, TITLE_SCALE, Theme.TEXT);
+		line += titleHeight + 6;
 
-		for (String row : this.wrap(body, cardWidth - pad * 2)) {
-			Theme.text(ctx, this.font, row, x + pad, line, Theme.TEXT_MUTE);
-			line += this.font.lineHeight + 2;
+		String heading = "Update Required";
+		Theme.text(ctx, this.font, heading, cx - this.font.width(heading) / 2, line, Theme.ACCENT_BRIGHT);
+		line += lineHeight + 10;
+
+		for (String row : bodyLines) {
+			Theme.text(ctx, this.font, row, cx - this.font.width(row) / 2, line, Theme.TEXT_MUTE);
+			line += lineHeight + 2;
 		}
 
-		line += 3;
-		ModUpdater.Release release = UpdateGate.release();
-		String versions = "Current " + UpdateGate.currentVersion()
-				+ (release != null ? "   to   " + release.version() : "");
-		Theme.text(ctx, this.font, versions, x + pad, line, Theme.TEXT_ASH);
-		line += this.font.lineHeight + 6;
+		line += 5;
+		int linkWidth = this.font.width(LINK_LABEL);
+		int linkX = cx - linkWidth / 2;
+		this.linkRect[0] = linkX;
+		this.linkRect[1] = line - 1;
+		this.linkRect[2] = linkWidth;
+		this.linkRect[3] = lineHeight + 2;
+		boolean linkHovered = Theme.inside(mouseX, mouseY, this.linkRect[0], this.linkRect[1], this.linkRect[2], this.linkRect[3]);
+		int linkColor = linkHovered ? Theme.lighten(Theme.ACCENT_BRIGHT, 0.25F) : Theme.ACCENT_BRIGHT;
+		Theme.text(ctx, this.font, LINK_LABEL, linkX, line, linkColor);
+		ctx.fill(linkX, line + lineHeight, linkX + linkWidth, line + lineHeight + 1, linkColor);
+		line += lineHeight + 6;
 
-		String disclaimer = "Updating downloads the latest version and restarts Minecraft.";
+		Theme.text(ctx, this.font, versions, cx - this.font.width(versions) / 2, line, Theme.TEXT_ASH);
+		line += lineHeight + 8;
 
-		for (String row : this.wrap(disclaimer, cardWidth - pad * 2)) {
-			Theme.text(ctx, this.font, row, x + pad, line, Theme.TEXT_ASH);
-			line += this.font.lineHeight + 1;
+		for (String row : noteLines) {
+			Theme.text(ctx, this.font, row, cx - this.font.width(row) / 2, line, Theme.TEXT_ASH);
+			line += lineHeight + 1;
 		}
 
-		if (!this.status.isEmpty()) {
-			line += 3;
-
-			for (String row : this.wrap(this.status, cardWidth - pad * 2)) {
-				Theme.text(ctx, this.font, row, x + pad, line, Theme.ACCENT_BRIGHT);
-				line += this.font.lineHeight + 1;
-			}
-		}
-
-		int buttonHeight = 18;
 		int buttonY = y + cardHeight - pad - buttonHeight;
-		int gap = 8;
-		int buttonWidth = (cardWidth - pad * 2 - gap) / 2;
-
 		this.skipRect[0] = x + pad;
 		this.skipRect[1] = buttonY;
-		this.skipRect[2] = buttonWidth;
+		this.skipRect[2] = innerWidth;
 		this.skipRect[3] = buttonHeight;
-		this.updateRect[0] = x + pad + buttonWidth + gap;
-		this.updateRect[1] = buttonY;
-		this.updateRect[2] = buttonWidth;
-		this.updateRect[3] = buttonHeight;
 
-		this.drawButton(ctx, this.skipRect, "Skip", mouseX, mouseY, false);
-		this.drawButton(ctx, this.updateRect, this.busy ? "Updating..." : "Update", mouseX, mouseY, true);
-	}
-
-	private void drawButton(GuiGraphics ctx, int[] rect, String label, int mouseX, int mouseY, boolean accent) {
-		boolean hovered = !this.busy && Theme.inside(mouseX, mouseY, rect[0], rect[1], rect[2], rect[3]);
-		int base = accent ? Theme.ACCENT : Theme.SURFACE_CARD;
-		int fill = this.busy && accent ? Theme.SURFACE_CARD : (hovered ? Theme.lighten(base, 0.10F) : base);
-		Theme.roundedRect(ctx, rect[0], rect[1], rect[2], rect[3], Theme.RADIUS_PILL, fill);
-
-		int color = accent && !this.busy ? Theme.ON_ACCENT : Theme.TEXT;
-		String bold = Theme.bold(label);
-		Theme.text(ctx, this.font, bold, rect[0] + (rect[2] - this.font.width(bold)) / 2,
-				rect[1] + (rect[3] - this.font.lineHeight) / 2 + 1, color);
+		boolean hovered = Theme.inside(mouseX, mouseY, this.skipRect[0], this.skipRect[1], this.skipRect[2], this.skipRect[3]);
+		int fill = hovered ? Theme.lighten(Theme.SURFACE_CARD, 0.10F) : Theme.SURFACE_CARD;
+		Theme.roundedRect(ctx, this.skipRect[0], this.skipRect[1], this.skipRect[2], this.skipRect[3], Theme.RADIUS_PILL, fill);
+		String skip = Theme.bold("Skip");
+		Theme.text(ctx, this.font, skip, cx - this.font.width(skip) / 2,
+				this.skipRect[1] + (this.skipRect[3] - lineHeight) / 2 + 1, Theme.TEXT);
 	}
 
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-		if (this.busy) {
-			return true;
-		}
-
 		double mouseX = event.x();
 		double mouseY = event.y();
+
+		if (Theme.inside(mouseX, mouseY, this.linkRect[0], this.linkRect[1], this.linkRect[2], this.linkRect[3])) {
+			this.openModrinth();
+			return true;
+		}
 
 		if (Theme.inside(mouseX, mouseY, this.skipRect[0], this.skipRect[1], this.skipRect[2], this.skipRect[3])) {
 			Theme.click(0.9F);
@@ -132,29 +134,12 @@ public class UpdateScreen extends Screen {
 			return true;
 		}
 
-		if (Theme.inside(mouseX, mouseY, this.updateRect[0], this.updateRect[1], this.updateRect[2], this.updateRect[3])) {
-			Theme.click(1.1F);
-			this.startUpdate();
-			return true;
-		}
-
 		return super.mouseClicked(event, doubleClick);
 	}
 
-	private void startUpdate() {
-		ModUpdater.Release release = UpdateGate.release();
-
-		if (release == null) {
-			this.status = "Update is not available yet. Please update from Modrinth.";
-			return;
-		}
-
-		this.busy = true;
-		this.status = "Starting update...";
-		Thread worker = new Thread(() -> ModUpdater.install(release, value -> this.status = value),
-				"schematicindex-update");
-		worker.setDaemon(true);
-		worker.start();
+	private void openModrinth() {
+		Theme.click(1.0F);
+		ConfirmLinkScreen.confirmLinkNow(this, MODRINTH_URL, true);
 	}
 
 	private List<String> wrap(String text, int maxWidth) {
