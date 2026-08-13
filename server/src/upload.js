@@ -11,8 +11,8 @@ const CATEGORIES = new Set([
   'FARMS', 'CONTRAPTIONS', 'REGEARS', 'STASHES', 'GAMBLING_BASES', 'HANGOUT_BASES', 'MEGA_BUILDS',
 ]);
 
-const MAX_SCHEMATIC = 20 * 1024 * 1024;
-const MAX_IMAGE = 8 * 1024 * 1024;
+const MAX_SCHEMATIC = 50 * 1024 * 1024;
+const MAX_IMAGE = 25 * 1024 * 1024;
 const MAX_IMAGES = 5;
 
 const upload = multer({
@@ -107,7 +107,7 @@ export function registerUploadRoutes(app) {
         return res.status(400).json({ error: 'bad_image_type', message: 'Images must be PNG or JPG.' });
       }
       if (img.size > MAX_IMAGE) {
-        return res.status(413).json({ error: 'image_too_large', message: 'An image is over 8 MB.' });
+        return res.status(413).json({ error: 'image_too_large', message: 'An image is over 25 MB.' });
       }
     }
 

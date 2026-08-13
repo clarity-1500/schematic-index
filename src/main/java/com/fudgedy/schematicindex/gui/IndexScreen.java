@@ -2446,9 +2446,9 @@ public class IndexScreen extends Screen {
 		this.formStatus = "Uploading...";
 
 		Thread worker = new Thread(() -> {
-			int status = Backend.upload(code, meta.toString(), schematic, pictures);
+			Backend.UploadResult result = Backend.upload(code, meta.toString(), schematic, pictures);
 			Minecraft.getInstance().execute(() -> {
-				if (status == 201) {
+				if (result.status() == 201) {
 					this.formPictures.clear();
 					this.formPictureStart = -1;
 					this.formPicturePreview = 0;
@@ -2460,8 +2460,10 @@ public class IndexScreen extends Screen {
 					this.formStatus = "";
 					Catalogue.refresh();
 					this.switchPage(Page.BROWSE);
+				} else if (result.message() != null && !result.message().isBlank()) {
+					this.formStatus = result.message();
 				} else {
-					this.formStatus = "Upload failed (" + status + "). Check the file and try again.";
+					this.formStatus = "Upload failed (" + result.status() + "). Check the file and try again.";
 				}
 			});
 		}, "schematicindex-upload");

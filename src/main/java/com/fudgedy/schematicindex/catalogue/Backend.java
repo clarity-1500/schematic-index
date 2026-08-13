@@ -154,7 +154,10 @@ public final class Backend {
 		}
 	}
 
-	public static int upload(String code, String metaJson, Path schematic, List<Path> images) {
+	public record UploadResult(int status, @Nullable String message) {
+	}
+
+	public static UploadResult upload(String code, String metaJson, Path schematic, List<Path> images) {
 		try {
 			String boundary = "----schematicindex" + System.nanoTime();
 			byte[] body = multipart(boundary, metaJson, schematic, images);
@@ -165,10 +168,22 @@ public final class Backend {
 					.header("Content-Type", "multipart/form-data; boundary=" + boundary)
 					.POST(HttpRequest.BodyPublishers.ofByteArray(body))
 					.build();
-			return CLIENT.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+			HttpResponse<String> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+			return new UploadResult(response.statusCode(), messageOf(response.body()));
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.warn("Upload failed", e);
-			return -1;
+			return new UploadResult(-1, null);
+		}
+	}
+
+	private static @Nullable String messageOf(String body) {
+		try {
+			JsonObject object = JsonParser.parseString(body).getAsJsonObject();
+			return object.has("message") && !object.get("message").isJsonNull()
+					? object.get("message").getAsString()
+					: null;
+		} catch (Throwable e) {
+			return null;
 		}
 	}
 
