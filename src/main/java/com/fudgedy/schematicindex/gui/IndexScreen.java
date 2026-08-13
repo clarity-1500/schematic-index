@@ -142,6 +142,7 @@ public class IndexScreen extends Screen {
 	private long detailOpenedAt;
 	private int detailImage;
 	private boolean detailModel;
+	private boolean detailDownloadLocked;
 	private float detailYaw = 35.0F;
 	private float detailPitch = 28.0F;
 	private float detailZoom = 1.0F;
@@ -948,7 +949,7 @@ public class IndexScreen extends Screen {
 	}
 
 	private void downloadButton(GuiGraphics ctx, Rect rect, SchematicEntry entry, int mouseX, int mouseY) {
-		boolean hovered = rect.contains(mouseX, mouseY);
+		boolean hovered = !this.detailDownloadLocked && rect.contains(mouseX, mouseY);
 		float hover = Theme.buttonHover(rect, hovered);
 		float scale = Theme.buttonScale(rect, 1.0F + Theme.HOVER_SCALE * hover);
 		Theme.pushScale(ctx, rect.x, rect.y, rect.width, rect.height, scale);
@@ -985,7 +986,7 @@ public class IndexScreen extends Screen {
 
 			label = switch (progress.state()) {
 				case RUNNING -> Math.round(fraction * 100) + "%";
-				case DONE -> "Saved";
+				case DONE -> "Downloaded";
 				case FAILED -> "Retry";
 			};
 		}
@@ -1587,7 +1588,8 @@ public class IndexScreen extends Screen {
 						SchematicPreview.WIDTH, SchematicPreview.HEIGHT);
 			} else {
 				Theme.blueprintPlaceholder(ctx, x + pad, y + pad, imageWidth, imageHeight);
-				String message = SchematicPreview.count() == 0 ? "No schematic files found" : "Rendering...";
+				String message = SchematicPreview.hasSchematic(entry.schematicSlot())
+						? "Rendering..." : "No schematic files found";
 				Theme.text(ctx, this.font, message,
 						x + pad + (imageWidth - this.font.width(message)) / 2,
 						y + pad + imageHeight / 2 - 4, Theme.TEXT_MUTE);
@@ -2132,6 +2134,7 @@ public class IndexScreen extends Screen {
 				this.pendingOverwrite = null;
 				this.reportOpen = false;
 				this.reportContextOpen = false;
+				this.detailDownloadLocked = false;
 				this.status = "";
 			}
 
@@ -2354,6 +2357,7 @@ public class IndexScreen extends Screen {
 		}
 
 		Backend.downloadAsync(entry.id());
+		this.detailDownloadLocked = true;
 		this.status = "Downloading into your schematics folder...";
 	}
 
@@ -2552,7 +2556,9 @@ public class IndexScreen extends Screen {
 				this.followConfirm = false;
 			}
 		} else if (this.detailDownload.contains(mouseX, mouseY)) {
-			this.startDownload(entry);
+			if (!this.detailDownloadLocked) {
+				this.startDownload(entry);
+			}
 		} else if (this.detailPreview3d.contains(mouseX, mouseY)) {
 			Theme.click(1.2F);
 			this.detailModel = !this.detailModel;

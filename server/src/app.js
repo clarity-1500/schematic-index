@@ -10,7 +10,9 @@ export function createApp() {
   app.disable('x-powered-by');
   app.use(express.json({ limit: '256kb' }));
 
-  app.get('/', (req, res) => res.redirect('/admin'));
+  app.get('/', (req, res) => {
+    res.json({ ok: true, service: 'schematic-index' });
+  });
 
   app.get('/health', (req, res) => {
     const posts = db.prepare('SELECT COUNT(*) AS n FROM posts').get().n;

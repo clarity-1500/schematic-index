@@ -143,6 +143,20 @@ public final class SchematicPreview {
 		return fileFor(normalise(slot));
 	}
 
+	private static boolean hasSource(int index) {
+		if (index >= URL_BASE) {
+			int i = index - URL_BASE;
+			return i >= 0 && i < URLS.size();
+		}
+
+		return fileFor(index) != null;
+	}
+
+	public static boolean hasSchematic(int slot) {
+		int index = normalise(slot);
+		return index >= 0 && hasSource(index);
+	}
+
 	private static int normalise(int slot) {
 		if (slot >= PICKED_BASE) {
 			return slot;
@@ -240,7 +254,7 @@ public final class SchematicPreview {
 			boolean freeLook, double @Nullable [] eye, float maxLayer) {
 		int index = normalise(slot);
 
-		if (index < 0 || fileFor(index) == null) {
+		if (index < 0 || !hasSource(index)) {
 			return;
 		}
 
