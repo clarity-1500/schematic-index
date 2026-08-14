@@ -40,4 +40,6 @@ The backend is a Node service (Express + SQLite) that exposes the catalogue API 
 
 ## License
 
-See [LICENSE](LICENSE).
+All Rights Reserved. The compiled mod may be downloaded and used, but the source
+code may not be copied, modified, redistributed, or used to make derivative works
+without written permission. See [LICENSE](LICENSE).
