@@ -4,7 +4,7 @@ import path from 'node:path';
 import multer from 'multer';
 import nbt from 'prismarine-nbt';
 import { db } from './db.js';
-import { paths } from './config.js';
+import { paths, fileUrl } from './config.js';
 import { serializePost } from './serialize.js';
 import { invalidatePosts } from './cache.js';
 
@@ -85,6 +85,67 @@ export function registerUploadRoutes(app) {
     }
 
     res.json({ valid: true, displayName: row.display_name });
+  });
+
+  app.get('/me/stats', requireCode, (req, res) => {
+    const codeId = req.uploaderCode.id;
+    const poster = req.uploaderCode.display_name;
+    const days = Math.min(365, Math.max(7, Number(req.query.days) || 30));
+
+    const labels = [];
+    const index = {};
+    const now = Date.now();
+
+    for (let i = days - 1; i >= 0; i--) {
+      const day = new Date(now - i * 86400000).toISOString().slice(0, 10);
+      index[day] = labels.length;
+      labels.push(day);
+    }
+
+    const since = labels[0];
+    const sinceMs = Date.parse(since + 'T00:00:00.000Z');
+    const series = { views: labels.map(() => 0), downloads: labels.map(() => 0), likes: labels.map(() => 0) };
+    const fill = (arr, rows) => {
+      for (const r of rows) {
+        if (r.day in index) arr[index[r.day]] = r.n;
+      }
+    };
+
+    const posts = db.prepare(`
+      SELECT p.id, p.title, p.thumbnail_name, p.poster, p.category, p.downloads, p.likes, p.posted_at, p.thumbnail_key,
+             (SELECT COUNT(*) FROM views v WHERE v.post_id = p.id) AS views
+      FROM posts p WHERE p.uploader_code_id = ? AND p.visibility = 'visible'
+      ORDER BY p.posted_at DESC
+    `).all(codeId);
+
+    fill(series.downloads, db.prepare("SELECT day, COUNT(*) n FROM downloads WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(since, codeId));
+    fill(series.views, db.prepare("SELECT day, COUNT(*) n FROM views WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(since, codeId));
+    fill(series.likes, db.prepare("SELECT date(created_at/1000,'unixepoch') day, COUNT(*) n FROM likes WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(sinceMs, codeId));
+
+    res.json({
+      poster,
+      totals: {
+        posts: posts.length,
+        views: posts.reduce((a, p) => a + p.views, 0),
+        downloads: posts.reduce((a, p) => a + p.downloads, 0),
+        likes: posts.reduce((a, p) => a + p.likes, 0),
+        followers: db.prepare('SELECT COUNT(*) n FROM follows WHERE poster = ?').get(poster).n,
+      },
+      days: labels,
+      series,
+      posts: posts.map((p) => ({
+        id: p.id,
+        title: p.title,
+        thumbnailName: p.thumbnail_name || '',
+        poster: p.poster,
+        category: p.category,
+        views: p.views,
+        downloads: p.downloads,
+        likes: p.likes,
+        postedAt: p.posted_at,
+        thumbnailUrl: fileUrl(p.thumbnail_key),
+      })),
+    });
   });
 
   app.post('/upload', requireCode, upload, async (req, res) => {
