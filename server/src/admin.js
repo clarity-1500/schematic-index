@@ -101,6 +101,55 @@ export function registerAdminRoutes(app) {
     });
   });
 
+  app.get('/admin/api/stats', owner, (req, res) => {
+    const days = Math.min(365, Math.max(7, Number(req.query.days) || 30));
+    const labels = [];
+    const index = {};
+    const now = Date.now();
+
+    for (let i = days - 1; i >= 0; i--) {
+      const day = new Date(now - i * 86400000).toISOString().slice(0, 10);
+      index[day] = labels.length;
+      labels.push(day);
+    }
+
+    const since = labels[0];
+    const sinceMs = Date.parse(since + 'T00:00:00.000Z');
+    const series = {
+      views: labels.map(() => 0),
+      downloads: labels.map(() => 0),
+      likes: labels.map(() => 0),
+      follows: labels.map(() => 0),
+    };
+
+    const fill = (arr, rows) => {
+      for (const r of rows) {
+        if (r.day in index) arr[index[r.day]] = r.n;
+      }
+    };
+
+    fill(series.downloads, db.prepare('SELECT day, COUNT(*) n FROM downloads WHERE day >= ? GROUP BY day').all(since));
+    fill(series.views, db.prepare('SELECT day, COUNT(*) n FROM views WHERE day >= ? GROUP BY day').all(since));
+    fill(series.likes, db.prepare("SELECT date(created_at/1000,'unixepoch') day, COUNT(*) n FROM likes WHERE created_at >= ? GROUP BY day").all(sinceMs));
+    fill(series.follows, db.prepare("SELECT date(created_at/1000,'unixepoch') day, COUNT(*) n FROM follows WHERE created_at >= ? GROUP BY day").all(sinceMs));
+
+    res.json({
+      totals: {
+        posts: db.prepare("SELECT COUNT(*) n FROM posts WHERE visibility = 'visible'").get().n,
+        views: db.prepare('SELECT COUNT(*) n FROM views').get().n,
+        downloads: db.prepare('SELECT COUNT(*) n FROM downloads').get().n,
+        likes: db.prepare('SELECT COUNT(*) n FROM likes').get().n,
+        follows: db.prepare('SELECT COUNT(*) n FROM follows').get().n,
+      },
+      days: labels,
+      series,
+      top: {
+        views: db.prepare('SELECT p.id, p.title, p.poster, COUNT(v.post_id) n FROM posts p JOIN views v ON v.post_id = p.id GROUP BY p.id ORDER BY n DESC LIMIT 6').all(),
+        downloads: db.prepare('SELECT id, title, poster, downloads n FROM posts WHERE downloads > 0 ORDER BY downloads DESC LIMIT 6').all(),
+      },
+    });
+  });
+
   app.get('/admin/api/news', owner, (req, res) => {
     const rows = db.prepare('SELECT * FROM news ORDER BY posted_at DESC').all();
     res.json({
