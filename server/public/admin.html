@@ -214,10 +214,20 @@ const CHART_OPTS = {
     x:{ ticks:{ color:'#a8b0b6', maxTicksLimit:8, autoSkip:true }, grid:{ color:'#2c3238' } },
     y:{ beginAtZero:true, ticks:{ color:'#a8b0b6', precision:0 }, grid:{ color:'#2c3238' } }
   },
-  plugins:{ legend:{ labels:{ color:'#f2f4f5', boxWidth:12 } } }
+  plugins:{ legend:{ labels:{ color:'#f2f4f5', usePointStyle:true, pointStyle:'circle', boxWidth:8, padding:16 } } }
 };
 function seriesDatasets(s) {
-  const mk = (label, arr) => ({ label, data: arr, borderColor: DATASET_COLORS[label], backgroundColor: DATASET_COLORS[label]+'33', tension:.25, fill:false, pointRadius:0, borderWidth:2 });
+  const mk = (label, arr) => ({
+    label, data: arr,
+    borderColor: DATASET_COLORS[label],
+    backgroundColor: DATASET_COLORS[label] + '22',
+    tension: .35, fill: false, borderWidth: 2.5,
+    pointRadius: 3.5, pointHoverRadius: 6,
+    pointBackgroundColor: '#1e2227',
+    pointBorderColor: DATASET_COLORS[label],
+    pointBorderWidth: 2,
+    pointHoverBackgroundColor: DATASET_COLORS[label],
+  });
   return [ mk('Views', s.views), mk('Downloads', s.downloads), mk('Likes', s.likes), mk('Follows', s.follows) ];
 }
 function upsertChart(chart, canvasId, labels, datasets) {
