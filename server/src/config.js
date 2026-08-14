@@ -20,6 +20,7 @@ export const paths = {
   files: path.join(config.dataDir, 'files'),
   images: path.join(config.dataDir, 'files', 'img'),
   schematics: path.join(config.dataDir, 'files', 'sch'),
+  uploadsTmp: path.join(config.dataDir, 'uploads-tmp'),
 };
 
 export function fileUrl(key) {

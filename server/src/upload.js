@@ -6,6 +6,7 @@ import nbt from 'prismarine-nbt';
 import { db } from './db.js';
 import { paths } from './config.js';
 import { serializePost } from './serialize.js';
+import { invalidatePosts } from './cache.js';
 
 const CATEGORIES = new Set([
   'FARMS', 'CONTRAPTIONS', 'REGEARS', 'STASHES', 'GAMBLING_BASES', 'HANGOUT_BASES', 'MEGA_BUILDS',
@@ -15,8 +16,15 @@ const MAX_SCHEMATIC = 50 * 1024 * 1024;
 const MAX_IMAGE = 25 * 1024 * 1024;
 const MAX_IMAGES = 5;
 
+fs.mkdirSync(paths.uploadsTmp, { recursive: true });
+
+// Stream uploads straight to disk instead of buffering them in memory, so a large
+// upload never blocks the event loop or spikes memory for every other request.
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination: paths.uploadsTmp,
+    filename: (req, file, cb) => cb(null, crypto.randomBytes(16).toString('hex')),
+  }),
   limits: { fileSize: MAX_SCHEMATIC, files: MAX_IMAGES + 1 },
 }).fields([
   { name: 'schematic', maxCount: 1 },
@@ -82,60 +90,66 @@ export function registerUploadRoutes(app) {
   app.post('/upload', requireCode, upload, async (req, res) => {
     const schematic = req.files?.schematic?.[0];
     const images = req.files?.images ?? [];
+    const temps = [schematic, ...images].filter(Boolean).map((f) => f.path);
+    const cleanup = () => Promise.all(temps.map((p) => fs.promises.unlink(p).catch(() => {})));
+    const fail = (status, error, message) => { cleanup(); return res.status(status).json({ error, message }); };
 
-    let meta;
     try {
-      meta = JSON.parse(req.body.meta || '{}');
-    } catch {
-      return res.status(400).json({ error: 'bad_meta', message: 'meta must be valid JSON.' });
-    }
-
-    const title = String(meta.title || '').trim();
-    const category = String(meta.category || '').toUpperCase();
-
-    if (!schematic) return res.status(400).json({ error: 'no_schematic', message: 'A .litematic file is required.' });
-    if (!schematic.originalname.toLowerCase().endsWith('.litematic')) {
-      return res.status(400).json({ error: 'bad_file', message: 'The schematic must be a .litematic file.' });
-    }
-    if (!title) return res.status(400).json({ error: 'no_title', message: 'A title is required.' });
-    if (!CATEGORIES.has(category)) return res.status(400).json({ error: 'bad_category', message: 'Unknown category.' });
-    if (images.length < 1 || images.length > MAX_IMAGES) {
-      return res.status(400).json({ error: 'bad_images', message: `Attach 1 to ${MAX_IMAGES} images.` });
-    }
-    for (const img of images) {
-      if (!imageExtension(img.mimetype)) {
-        return res.status(400).json({ error: 'bad_image_type', message: 'Images must be PNG or JPG.' });
+      let meta;
+      try {
+        meta = JSON.parse(req.body.meta || '{}');
+      } catch {
+        return fail(400, 'bad_meta', 'meta must be valid JSON.');
       }
-      if (img.size > MAX_IMAGE) {
-        return res.status(413).json({ error: 'image_too_large', message: 'An image is over 25 MB.' });
+
+      const title = String(meta.title || '').trim();
+      const category = String(meta.category || '').toUpperCase();
+
+      if (!schematic) return fail(400, 'no_schematic', 'A .litematic file is required.');
+      if (!schematic.originalname.toLowerCase().endsWith('.litematic')) return fail(400, 'bad_file', 'The schematic must be a .litematic file.');
+      if (!title) return fail(400, 'no_title', 'A title is required.');
+      if (!CATEGORIES.has(category)) return fail(400, 'bad_category', 'Unknown category.');
+      if (images.length < 1 || images.length > MAX_IMAGES) return fail(400, 'bad_images', `Attach 1 to ${MAX_IMAGES} images.`);
+
+      for (const img of images) {
+        if (!imageExtension(img.mimetype)) return fail(400, 'bad_image_type', 'Images must be PNG or JPG.');
+        if (img.size > MAX_IMAGE) return fail(413, 'image_too_large', 'An image is over 25 MB.');
       }
+
+      const id = crypto.randomBytes(8).toString('hex');
+      const fileKey = `sch/${id}.litematic`;
+
+      const buffer = await fs.promises.readFile(schematic.path);
+      const fileHash = 'sha256:' + crypto.createHash('sha256').update(buffer).digest('hex');
+      const dims = await readLitematic(buffer);
+
+      await fs.promises.rename(schematic.path, path.join(paths.files, fileKey));
+
+      const imageKeys = [];
+      for (let i = 0; i < images.length; i++) {
+        const key = `img/${id}_${i}.${imageExtension(images[i].mimetype)}`;
+        await fs.promises.rename(images[i].path, path.join(paths.files, key));
+        imageKeys.push(key);
+      }
+
+      insertPost.run(
+        id, title, String(meta.thumbnailName || '').trim() || null, req.uploaderCode.display_name,
+        String(meta.designer || '').trim() || null, category, dims.x, dims.y, dims.z, dims.blocks,
+        Date.now(), String(meta.description || '').trim() || null, imageKeys[0], fileKey, fileHash,
+        schematic.size, req.uploaderCode.id, (req.get('X-Device-Token') || '').trim() || null,
+        req.ip || null,
+      );
+
+      imageKeys.forEach((key, i) => insertImage.run(id, i, key));
+      invalidatePosts();
+
+      const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(id);
+      res.status(201).json(serializePost(row, ''));
+    } catch (e) {
+      cleanup();
+      console.error('[upload] failed', e);
+      res.status(500).json({ error: 'upload_failed', message: 'The upload could not be processed.' });
     }
-
-    const id = crypto.randomBytes(8).toString('hex');
-    const dims = await readLitematic(schematic.buffer);
-
-    const fileKey = `sch/${id}.litematic`;
-    fs.writeFileSync(path.join(paths.files, fileKey), schematic.buffer);
-    const fileHash = 'sha256:' + crypto.createHash('sha256').update(schematic.buffer).digest('hex');
-
-    const imageKeys = images.map((img, i) => {
-      const key = `img/${id}_${i}.${imageExtension(img.mimetype)}`;
-      fs.writeFileSync(path.join(paths.files, key), img.buffer);
-      return key;
-    });
-
-    insertPost.run(
-      id, title, String(meta.thumbnailName || '').trim() || null, req.uploaderCode.display_name,
-      String(meta.designer || '').trim() || null, category, dims.x, dims.y, dims.z, dims.blocks,
-      Date.now(), String(meta.description || '').trim() || null, imageKeys[0], fileKey, fileHash,
-      schematic.buffer.length, req.uploaderCode.id, (req.get('X-Device-Token') || '').trim() || null,
-      req.ip || null,
-    );
-
-    imageKeys.forEach((key, i) => insertImage.run(id, i, key));
-
-    const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(id);
-    res.status(201).json(serializePost(row, ''));
   });
 
   app.use((err, req, res, next) => {

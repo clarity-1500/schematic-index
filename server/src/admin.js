@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import { config } from './config.js';
+import { invalidatePosts } from './cache.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -41,11 +42,13 @@ export function registerAdminRoutes(app) {
 
   app.delete('/admin/api/posts/:id', owner, (req, res) => {
     const info = db.prepare("UPDATE posts SET visibility = 'deleted' WHERE id = ?").run(req.params.id);
+    invalidatePosts();
     res.json({ ok: true, changed: info.changes });
   });
 
   app.post('/admin/api/posts/:id/restore', owner, (req, res) => {
     db.prepare("UPDATE posts SET visibility = 'visible' WHERE id = ?").run(req.params.id);
+    invalidatePosts();
     res.json({ ok: true });
   });
 
@@ -179,11 +182,13 @@ export function registerAdminRoutes(app) {
       'INSERT INTO news (badge, title, date_text, body, highlight, posted_at) VALUES (?, ?, ?, ?, ?, ?)',
     ).run(badge, title, dateText, body, highlight, Date.now());
 
+    invalidatePosts();
     res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
   });
 
   app.delete('/admin/api/news/:id', owner, (req, res) => {
     db.prepare('DELETE FROM news WHERE id = ?').run(Number(req.params.id));
+    invalidatePosts();
     res.json({ ok: true });
   });
 
@@ -265,6 +270,7 @@ export function registerAdminRoutes(app) {
       const row = db.prepare('SELECT id FROM codes WHERE code = ?').get(code);
       if (row) {
         db.prepare("UPDATE posts SET visibility = 'deleted' WHERE uploader_code_id = ?").run(row.id);
+        invalidatePosts();
       }
     }
 

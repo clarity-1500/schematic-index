@@ -2,6 +2,11 @@ import express from 'express';
 import { db } from './db.js';
 import { paths } from './config.js';
 import { serializePost, serializeNews } from './serialize.js';
+import { cached } from './cache.js';
+
+const INDEX_TTL_MS = 15_000;
+const NEWS_TTL_MS = 30_000;
+const likedByToken = db.prepare('SELECT post_id FROM likes WHERE token = ?');
 
 const CATEGORIES = new Set([
   'FARMS', 'CONTRAPTIONS', 'REGEARS', 'STASHES', 'GAMBLING_BASES', 'HANGOUT_BASES', 'MEGA_BUILDS',
@@ -28,39 +33,57 @@ function encodeCursor(offset) {
 }
 
 export function registerReadRoutes(app) {
-  app.use('/files', express.static(paths.files, { maxAge: '7d', immutable: true }));
+  app.use('/files', express.static(paths.files, { maxAge: '365d', immutable: true }));
 
   app.get('/index', (req, res) => {
     const token = req.get('X-Device-Token') || '';
     const category = String(req.query.category || '').toUpperCase();
-    const sort = SORTS[String(req.query.sort || 'newest')] || SORTS.newest;
+    const sortKey = String(req.query.sort || 'newest');
+    const sort = SORTS[sortKey] || SORTS.newest;
     const search = String(req.query.search || '').trim();
     const limit = Math.min(60, Math.max(1, Number(req.query.limit) || 24));
     const offset = decodeCursor(req.query.cursor);
+    const cat = CATEGORIES.has(category) ? category : '';
 
-    const where = ["visibility = 'visible'"];
-    const args = [];
+    const cacheKey = `index:${cat}|${sortKey}|${search.toLowerCase()}|${limit}|${offset}`;
 
-    if (CATEGORIES.has(category)) {
-      where.push('category = ?');
-      args.push(category);
+    const base = cached(cacheKey, INDEX_TTL_MS, () => {
+      const where = ["visibility = 'visible'"];
+      const args = [];
+
+      if (cat) {
+        where.push('category = ?');
+        args.push(cat);
+      }
+
+      if (search) {
+        where.push('(title LIKE ? OR poster LIKE ? OR designer LIKE ?)');
+        const like = `%${search}%`;
+        args.push(like, like, like);
+      }
+
+      const whereSql = where.join(' AND ');
+      const total = db.prepare(`SELECT COUNT(*) AS n FROM posts WHERE ${whereSql}`).get(...args).n;
+      const rows = db
+        .prepare(`SELECT * FROM posts WHERE ${whereSql} ORDER BY ${sort} LIMIT ? OFFSET ?`)
+        .all(...args, limit, offset);
+
+      const posts = rows.map((r) => serializePost(r, ''));
+      const nextCursor = offset + rows.length < total ? encodeCursor(offset + limit) : null;
+      return { posts, nextCursor, total };
+    });
+
+    let posts = base.posts;
+
+    if (token) {
+      const liked = new Set(likedByToken.all(token).map((r) => r.post_id));
+
+      if (liked.size) {
+        posts = base.posts.map((p) => (liked.has(p.id) ? { ...p, liked: true } : p));
+      }
     }
 
-    if (search) {
-      where.push('(title LIKE ? OR poster LIKE ? OR designer LIKE ?)');
-      const like = `%${search}%`;
-      args.push(like, like, like);
-    }
-
-    const whereSql = where.join(' AND ');
-    const total = db.prepare(`SELECT COUNT(*) AS n FROM posts WHERE ${whereSql}`).get(...args).n;
-    const rows = db
-      .prepare(`SELECT * FROM posts WHERE ${whereSql} ORDER BY ${sort} LIMIT ? OFFSET ?`)
-      .all(...args, limit, offset);
-
-    const posts = rows.map((r) => serializePost(r, token));
-    const nextCursor = offset + rows.length < total ? encodeCursor(offset + limit) : null;
-    res.json({ posts, nextCursor, total });
+    res.json({ posts, nextCursor: base.nextCursor, total: base.total });
   });
 
   app.get('/post/:id', (req, res) => {
@@ -75,7 +98,8 @@ export function registerReadRoutes(app) {
   });
 
   app.get('/news', (req, res) => {
-    const rows = db.prepare('SELECT * FROM news ORDER BY posted_at DESC, id DESC').all();
-    res.json({ news: rows.map(serializeNews) });
+    const news = cached('news:all', NEWS_TTL_MS, () =>
+      db.prepare('SELECT * FROM news ORDER BY posted_at DESC, id DESC').all().map(serializeNews));
+    res.json({ news });
   });
 }

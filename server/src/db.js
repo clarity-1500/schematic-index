@@ -7,6 +7,11 @@ fs.mkdirSync(paths.schematics, { recursive: true });
 
 export const db = new DatabaseSync(paths.db);
 db.exec('PRAGMA journal_mode = WAL');
+db.exec('PRAGMA synchronous = NORMAL');
+db.exec('PRAGMA busy_timeout = 5000');
+db.exec('PRAGMA cache_size = -16000');
+db.exec('PRAGMA temp_store = MEMORY');
+db.exec('PRAGMA mmap_size = 268435456');
 db.exec('PRAGMA foreign_keys = ON');
 
 db.exec(`
@@ -110,6 +115,16 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_follows_poster ON follows(poster, created_at);
   CREATE INDEX IF NOT EXISTS idx_follows_post ON follows(post_id, created_at);
+
+  -- Indexes matching the hot query patterns: the per-token liked overlay on /index,
+  -- and the day/created_at rollups behind the analytics endpoints.
+  CREATE INDEX IF NOT EXISTS idx_likes_token ON likes(token);
+  CREATE INDEX IF NOT EXISTS idx_likes_created ON likes(created_at);
+  CREATE INDEX IF NOT EXISTS idx_downloads_day ON downloads(day);
+  CREATE INDEX IF NOT EXISTS idx_downloads_post ON downloads(post_id, day);
+  CREATE INDEX IF NOT EXISTS idx_views_day ON views(day);
+  CREATE INDEX IF NOT EXISTS idx_views_post ON views(post_id, day);
+  CREATE INDEX IF NOT EXISTS idx_follows_created ON follows(created_at);
 `);
 
 console.log(`[db] ready at ${paths.db}`);
