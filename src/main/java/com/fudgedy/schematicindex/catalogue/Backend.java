@@ -9,7 +9,11 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.FilterInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -149,6 +153,26 @@ public final class Backend {
 		}
 	}
 
+	public static @Nullable JsonObject myStats(String code, int days) {
+		try {
+			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + "/me/stats?days=" + days))
+					.timeout(Duration.ofSeconds(12))
+					.header("X-Upload-Code", code)
+					.GET()
+					.build();
+			HttpResponse<String> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+
+			if (response.statusCode() >= 400) {
+				return null;
+			}
+
+			return JsonParser.parseString(response.body()).getAsJsonObject();
+		} catch (Throwable e) {
+			SchematicIndexMod.LOGGER.debug("me/stats failed", e);
+			return null;
+		}
+	}
+
 	public static @Nullable String checkCode(String code) {
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + "/uploader"))
@@ -172,22 +196,69 @@ public final class Backend {
 	public record UploadResult(int status, @Nullable String message) {
 	}
 
+	private static volatile double uploadFraction;
+
+	public static double uploadFraction() {
+		return uploadFraction;
+	}
+
 	public static UploadResult upload(String code, String metaJson, Path schematic, List<Path> images) {
 		try {
+			uploadFraction = 0.0;
 			String boundary = "----schematicindex" + System.nanoTime();
 			byte[] body = multipart(boundary, metaJson, schematic, images);
+			long total = body.length;
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + "/upload"))
-					.timeout(Duration.ofMinutes(2))
+					.timeout(Duration.ofMinutes(10))
 					.header("X-Upload-Code", code)
 					.header("X-Device-Token", Settings.deviceToken())
 					.header("Content-Type", "multipart/form-data; boundary=" + boundary)
-					.POST(HttpRequest.BodyPublishers.ofByteArray(body))
+					.POST(HttpRequest.BodyPublishers.ofInputStream(() -> new CountingStream(new ByteArrayInputStream(body), total)))
 					.build();
 			HttpResponse<String> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+			uploadFraction = 1.0;
 			return new UploadResult(response.statusCode(), messageOf(response.body()));
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.warn("Upload failed", e);
 			return new UploadResult(-1, null);
+		}
+	}
+
+	private static final class CountingStream extends FilterInputStream {
+		private final long total;
+		private long count;
+
+		CountingStream(InputStream in, long total) {
+			super(in);
+			this.total = total;
+		}
+
+		@Override
+		public int read() throws IOException {
+			int value = super.read();
+
+			if (value >= 0) {
+				count++;
+				update();
+			}
+
+			return value;
+		}
+
+		@Override
+		public int read(byte[] buffer, int offset, int length) throws IOException {
+			int read = super.read(buffer, offset, length);
+
+			if (read > 0) {
+				count += read;
+				update();
+			}
+
+			return read;
+		}
+
+		private void update() {
+			uploadFraction = total > 0 ? Math.min(1.0, (double) count / total) : 0.0;
 		}
 	}
 

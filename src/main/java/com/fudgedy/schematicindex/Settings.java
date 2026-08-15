@@ -23,6 +23,7 @@ public final class Settings {
 	private static final String KEY_NOTIFICATIONS = "notifications";
 	private static final String KEY_DEVICE_TOKEN = "device_token";
 	private static final String KEY_TERMS = "terms_accepted";
+	private static final String KEY_SKIP_DESIGNER_WARNING = "skip_designer_warning";
 
 	private static final String OFFICIAL_API = "https://schematic-index-production.up.railway.app";
 
@@ -32,6 +33,7 @@ public final class Settings {
 	private static @Nullable String deviceToken;
 
 	private static boolean termsAccepted;
+	private static boolean skipDesignerWarning;
 
 	private static boolean toasts = true;
 
@@ -120,6 +122,15 @@ public final class Settings {
 		save();
 	}
 
+	public static boolean skipDesignerWarning() {
+		return skipDesignerWarning;
+	}
+
+	public static void setSkipDesignerWarning(boolean value) {
+		skipDesignerWarning = value;
+		save();
+	}
+
 	public static void revokeTerms() {
 		termsAccepted = false;
 		save();
@@ -192,6 +203,7 @@ public final class Settings {
 		notifications = parse(properties.getProperty(KEY_NOTIFICATIONS), true);
 		deviceToken = properties.getProperty(KEY_DEVICE_TOKEN, "");
 		termsAccepted = parse(properties.getProperty(KEY_TERMS), false);
+		skipDesignerWarning = parse(properties.getProperty(KEY_SKIP_DESIGNER_WARNING), false);
 
 		String stored = properties.getProperty(KEY_DOWNLOAD_DIR);
 		customDownloadDirectory = stored == null || stored.isBlank() ? null : Path.of(stored.trim());
@@ -207,6 +219,7 @@ public final class Settings {
 		properties.setProperty(KEY_TOASTS, Boolean.toString(toasts));
 		properties.setProperty(KEY_NOTIFICATIONS, Boolean.toString(notifications));
 		properties.setProperty(KEY_TERMS, Boolean.toString(termsAccepted));
+		properties.setProperty(KEY_SKIP_DESIGNER_WARNING, Boolean.toString(skipDesignerWarning));
 
 		if (deviceToken != null && !deviceToken.isBlank()) {
 			properties.setProperty(KEY_DEVICE_TOKEN, deviceToken);
