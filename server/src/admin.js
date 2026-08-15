@@ -6,7 +6,7 @@ import multer from 'multer';
 import { db } from './db.js';
 import { config, paths } from './config.js';
 import { invalidatePosts, invalidateContent } from './cache.js';
-import { getCreditsAdmin, getTerms, getLinksAdmin, getJsonKv, setKv } from './content.js';
+import { getCreditsAdmin, getTerms, getLinksAdmin, getPartnersAdmin, getJsonKv, setKv } from './content.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const linkIconsDir = path.join(paths.files, 'link');
@@ -304,6 +304,7 @@ export function registerAdminRoutes(app) {
       announcement: getJsonKv('announcement', null),
       terms: getTerms(),
       links: getLinksAdmin(),
+      partners: getPartnersAdmin(),
     });
   });
 
@@ -415,6 +416,40 @@ export function registerAdminRoutes(app) {
     }
 
     db.prepare('DELETE FROM links WHERE id = ?').run(Number(req.params.id));
+    invalidateContent();
+    res.json({ ok: true });
+  });
+
+  app.post('/admin/api/partners', owner, iconUpload, (req, res) => {
+    const url = String(req.body?.url || '').trim();
+    const name = String(req.body?.name || '').trim();
+
+    if (!url) {
+      if (req.file) fs.promises.unlink(req.file.path).catch(() => {});
+      return res.status(400).json({ error: 'no_url', message: 'A URL is required.' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'no_icon', message: 'An icon image is required.' });
+    }
+
+    const iconKey = `link/${req.file.filename}`;
+    const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM partners').get().p;
+    db.prepare('INSERT INTO partners (icon_key, url, name, position, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(iconKey, url, name, position, Date.now());
+
+    invalidateContent();
+    res.status(201).json({ ok: true });
+  });
+
+  app.delete('/admin/api/partners/:id', owner, (req, res) => {
+    const row = db.prepare('SELECT icon_key FROM partners WHERE id = ?').get(Number(req.params.id));
+
+    if (row?.icon_key) {
+      fs.promises.unlink(path.join(paths.files, row.icon_key)).catch(() => {});
+    }
+
+    db.prepare('DELETE FROM partners WHERE id = ?').run(Number(req.params.id));
     invalidateContent();
     res.json({ ok: true });
   });

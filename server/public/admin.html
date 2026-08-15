@@ -145,6 +145,13 @@
         </div>
         <label>Description</label><textarea id="an-desc" placeholder="What you want everyone to know"></textarea>
         <label class="row" style="margin-top:10px; gap:8px; align-items:center"><span>Accent color</span><input id="an-color" type="color" value="#3fa87f" style="width:48px; height:30px; padding:2px" /></label>
+        <div class="row" style="gap:6px; margin-top:8px; flex-wrap:wrap">
+          <button class="small" style="border-left:4px solid #3fa87f" onclick="preset('#3fa87f','Update')">Update</button>
+          <button class="small" style="border-left:4px solid #4a86e8" onclick="preset('#4a86e8','Notice')">Notice</button>
+          <button class="small" style="border-left:4px solid #7b61ff" onclick="preset('#7b61ff','Bug fix')">Bug fix</button>
+          <button class="small" style="border-left:4px solid #e08a1e" onclick="preset('#e08a1e','Maintenance')">Maintenance</button>
+          <button class="small" style="border-left:4px solid #d64545" onclick="preset('#d64545','Outage')">Outage</button>
+        </div>
         <div class="row" style="margin-top:12px; gap:8px">
           <button class="primary" onclick="saveAnnouncement()">Publish banner</button>
           <button class="small danger" onclick="clearAnnouncement()">Take down</button>
@@ -170,6 +177,18 @@
         <label>Icon image</label><input id="ln-icon" type="file" accept="image/png,image/jpeg,image/gif,image/webp" />
         <div style="margin-top:12px"><button class="primary" onclick="addLink()">Add link</button></div>
         <div id="linksList" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Partners</h3>
+        <p class="muted" style="margin-top:0">Shown as an icon + name rail on the right of the browse page. Upload an icon (PNG/JPG), the URL and the partner name.</p>
+        <div class="grid2">
+          <div><label>URL</label><input id="pt-url" placeholder="https://..." /></div>
+          <div><label>Name</label><input id="pt-name" placeholder="Partner name" /></div>
+        </div>
+        <label>Icon image</label><input id="pt-icon" type="file" accept="image/png,image/jpeg,image/gif,image/webp" />
+        <div style="margin-top:12px"><button class="primary" onclick="addPartner()">Add partner</button></div>
+        <div id="partnersList" style="margin-top:14px"></div>
       </div>
     </section>
   </main>
@@ -273,6 +292,19 @@ async function loadContent() {
       </div>
       <button class="small danger" onclick="delLink(${l.id})">Remove</button>
     </div>`).join('') || '<span class="muted">No links yet.</span>';
+
+  document.getElementById('partnersList').innerHTML = (c.partners || []).map(p => `
+    <div class="row" style="justify-content:space-between; border-bottom:1px solid var(--line); padding:8px 0; gap:10px">
+      <div class="row" style="gap:10px">
+        ${p.iconUrl ? `<img src="${esc(p.iconUrl)}" width="24" height="24" style="border-radius:4px" alt="" />` : ''}
+        <div><b>${esc(p.name || p.url)}</b><br><span class="muted" style="font-size:12px">${esc(p.url)}</span></div>
+      </div>
+      <button class="small danger" onclick="delPartner(${p.id})">Remove</button>
+    </div>`).join('') || '<span class="muted">No partners yet.</span>';
+}
+function preset(color, tag) {
+  document.getElementById('an-color').value = color;
+  if (!v('an-tag')) document.getElementById('an-tag').value = tag;
 }
 async function addCredit() {
   const body = { username:v('cr-username'), nickname:v('cr-nick'), role:v('cr-role'), description:v('cr-desc') };
@@ -307,6 +339,18 @@ async function addLink() {
   else toast('Icon and URL required');
 }
 async function delLink(id){ if(confirm('Remove this link?')){ await api('/admin/api/links/'+id,{method:'DELETE'}); loadContent(); toast('Removed'); } }
+async function addPartner() {
+  const iconInput = document.getElementById('pt-icon');
+  const fd = new FormData();
+  fd.append('url', v('pt-url'));
+  fd.append('name', v('pt-name'));
+  if (iconInput.files[0]) fd.append('icon', iconInput.files[0]);
+  const res = await fetch('/admin/api/partners', { method:'POST', headers:{ 'X-Owner-Key': KEY }, body: fd });
+  if (res.status === 403) { logout(); return; }
+  if (res.ok) { toast('Partner added'); ['pt-url','pt-name','pt-icon'].forEach(id=>document.getElementById(id).value=''); loadContent(); }
+  else toast('Icon and URL required');
+}
+async function delPartner(id){ if(confirm('Remove this partner?')){ await api('/admin/api/partners/'+id,{method:'DELETE'}); loadContent(); toast('Removed'); } }
 
 async function loadPosts() {
   const { posts } = await (await api('/admin/api/posts')).json();

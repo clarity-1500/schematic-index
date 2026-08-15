@@ -72,6 +72,19 @@ export function getLinks() {
   return getLinksAdmin().map((l) => ({ url: l.url, label: l.label, iconUrl: l.iconUrl }));
 }
 
+export function getPartnersAdmin() {
+  return db.prepare('SELECT * FROM partners ORDER BY position ASC, id ASC').all().map((r) => ({
+    id: r.id,
+    url: r.url,
+    name: r.name || '',
+    iconUrl: fileUrl(r.icon_key),
+  }));
+}
+
+export function getPartners() {
+  return getPartnersAdmin().map((p) => ({ url: p.url, name: p.name, iconUrl: p.iconUrl }));
+}
+
 export function getCreditsAdmin() {
   return db.prepare('SELECT * FROM credits ORDER BY position ASC, id ASC').all().map((r) => ({
     id: r.id,
@@ -111,6 +124,7 @@ export function buildContent() {
     announcement: getAnnouncement(),
     terms: getTerms(),
     links: getLinks(),
+    partners: getPartners(),
   };
 }
 
