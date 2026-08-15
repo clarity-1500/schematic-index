@@ -144,6 +144,7 @@
           <div><label>Tag</label><input id="an-tag" placeholder="Notice" /></div>
         </div>
         <label>Description</label><textarea id="an-desc" placeholder="What you want everyone to know"></textarea>
+        <label class="row" style="margin-top:10px; gap:8px; align-items:center"><span>Accent color</span><input id="an-color" type="color" value="#3fa87f" style="width:48px; height:30px; padding:2px" /></label>
         <div class="row" style="margin-top:12px; gap:8px">
           <button class="primary" onclick="saveAnnouncement()">Publish banner</button>
           <button class="small danger" onclick="clearAnnouncement()">Take down</button>
@@ -161,11 +162,14 @@
 
       <div class="card">
         <h3 style="margin-top:0">Links</h3>
-        <p class="muted" style="margin-top:0">Where the mod's buttons point. Leave blank to hide a link.</p>
-        <label>Discord</label><input id="ln-discord" placeholder="https://discord.gg/..." />
-        <label>Modrinth</label><input id="ln-modrinth" placeholder="https://modrinth.com/project/..." />
-        <label>Support</label><input id="ln-support" placeholder="https://..." />
-        <div style="margin-top:12px"><button class="primary" onclick="saveLinks()">Save links</button></div>
+        <p class="muted" style="margin-top:0">Shown as icons at the bottom of the mod's left rail. Upload a square icon (PNG/JPG) and the URL it opens.</p>
+        <div class="grid2">
+          <div><label>URL</label><input id="ln-url" placeholder="https://discord.gg/..." /></div>
+          <div><label>Label (hover tooltip)</label><input id="ln-label" placeholder="Discord" /></div>
+        </div>
+        <label>Icon image</label><input id="ln-icon" type="file" accept="image/png,image/jpeg,image/gif,image/webp" />
+        <div style="margin-top:12px"><button class="primary" onclick="addLink()">Add link</button></div>
+        <div id="linksList" style="margin-top:14px"></div>
       </div>
     </section>
   </main>
@@ -255,14 +259,20 @@ async function loadContent() {
   document.getElementById('an-title').value = a.active === false ? '' : (a.title || '');
   document.getElementById('an-tag').value = a.active === false ? '' : (a.tag || '');
   document.getElementById('an-desc').value = a.active === false ? '' : (a.description || '');
+  if (a.color) document.getElementById('an-color').value = a.color;
   document.getElementById('an-state').textContent = (a && a.active && a.title) ? 'Live now' : 'Not shown';
 
   document.getElementById('tm-version').value = c.terms?.version ?? '';
   document.getElementById('tm-body').value = c.terms?.body ?? '';
 
-  document.getElementById('ln-discord').value = c.links?.discord ?? '';
-  document.getElementById('ln-modrinth').value = c.links?.modrinth ?? '';
-  document.getElementById('ln-support').value = c.links?.support ?? '';
+  document.getElementById('linksList').innerHTML = (c.links || []).map(l => `
+    <div class="row" style="justify-content:space-between; border-bottom:1px solid var(--line); padding:8px 0; gap:10px">
+      <div class="row" style="gap:10px">
+        ${l.iconUrl ? `<img src="${esc(l.iconUrl)}" width="24" height="24" style="border-radius:4px" alt="" />` : ''}
+        <div><b>${esc(l.label || l.url)}</b><br><span class="muted" style="font-size:12px">${esc(l.url)}</span></div>
+      </div>
+      <button class="small danger" onclick="delLink(${l.id})">Remove</button>
+    </div>`).join('') || '<span class="muted">No links yet.</span>';
 }
 async function addCredit() {
   const body = { username:v('cr-username'), nickname:v('cr-nick'), role:v('cr-role'), description:v('cr-desc') };
@@ -272,7 +282,7 @@ async function addCredit() {
 }
 async function delCredit(id){ if(confirm('Remove this credit?')){ await api('/admin/api/credits/'+id,{method:'DELETE'}); loadContent(); toast('Removed'); } }
 async function saveAnnouncement() {
-  const body = { title:v('an-title'), tag:v('an-tag'), description:v('an-desc'), active:true };
+  const body = { title:v('an-title'), tag:v('an-tag'), description:v('an-desc'), color:document.getElementById('an-color').value, active:true };
   const res = await api('/admin/api/announcement', { method:'PUT', body: JSON.stringify(body) });
   if (res.ok) { toast('Banner published'); loadContent(); } else toast('Title required');
 }
@@ -285,11 +295,18 @@ async function saveTerms() {
   const res = await api('/admin/api/terms', { method:'PUT', body: JSON.stringify(body) });
   if (res.ok) { toast('Terms saved'); loadContent(); } else toast('Body required');
 }
-async function saveLinks() {
-  const body = { discord:v('ln-discord'), modrinth:v('ln-modrinth'), support:v('ln-support') };
-  await api('/admin/api/links', { method:'PUT', body: JSON.stringify(body) });
-  toast('Links saved');
+async function addLink() {
+  const iconInput = document.getElementById('ln-icon');
+  const fd = new FormData();
+  fd.append('url', v('ln-url'));
+  fd.append('label', v('ln-label'));
+  if (iconInput.files[0]) fd.append('icon', iconInput.files[0]);
+  const res = await fetch('/admin/api/links', { method:'POST', headers:{ 'X-Owner-Key': KEY }, body: fd });
+  if (res.status === 403) { logout(); return; }
+  if (res.ok) { toast('Link added'); ['ln-url','ln-label','ln-icon'].forEach(id=>document.getElementById(id).value=''); loadContent(); }
+  else toast('Icon and URL required');
 }
+async function delLink(id){ if(confirm('Remove this link?')){ await api('/admin/api/links/'+id,{method:'DELETE'}); loadContent(); toast('Removed'); } }
 
 async function loadPosts() {
   const { posts } = await (await api('/admin/api/posts')).json();

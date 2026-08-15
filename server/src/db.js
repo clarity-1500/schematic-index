@@ -73,10 +73,20 @@ db.exec(`
     created_at  INTEGER NOT NULL
   );
 
-  -- Key/value store for singleton editable content (announcement, terms, links).
+  -- Key/value store for singleton editable content (announcement, terms).
   CREATE TABLE IF NOT EXISTS content_kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  );
+
+  -- Server-editable link buttons rendered as icons in the mod's left rail.
+  CREATE TABLE IF NOT EXISTS links (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    icon_key   TEXT,
+    url        TEXT NOT NULL,
+    label      TEXT,
+    position   INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS reports (

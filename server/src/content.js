@@ -1,4 +1,5 @@
 import { db } from './db.js';
+import { fileUrl } from './config.js';
 
 // Server-editable content the mod pulls at runtime, so credits, the announcement
 // banner, the terms text and outbound links can change without shipping a new jar.
@@ -16,12 +17,6 @@ const DEFAULT_TERMS_BODY =
   + 'reserve the right to remove infringing content and terminate access for abuse.\n\n'
   + 'Disclaimer: This service is provided "as-is." We are not liable for server downtime '
   + 'or issues caused by third-party files.';
-
-const DEFAULT_LINKS = {
-  discord: '',
-  modrinth: 'https://modrinth.com/project/the-schematic-index',
-  support: '',
-};
 
 const getKvStmt = db.prepare('SELECT value FROM content_kv WHERE key = ?');
 const setKvStmt = db.prepare(
@@ -64,8 +59,17 @@ export function getTerms() {
   };
 }
 
+export function getLinksAdmin() {
+  return db.prepare('SELECT * FROM links ORDER BY position ASC, id ASC').all().map((r) => ({
+    id: r.id,
+    url: r.url,
+    label: r.label || '',
+    iconUrl: fileUrl(r.icon_key),
+  }));
+}
+
 export function getLinks() {
-  return { ...DEFAULT_LINKS, ...(getJsonKv('links', {}) || {}) };
+  return getLinksAdmin().map((l) => ({ url: l.url, label: l.label, iconUrl: l.iconUrl }));
 }
 
 export function getCreditsAdmin() {
@@ -90,6 +94,7 @@ export function getAnnouncement() {
     title: String(a.title || ''),
     tag: String(a.tag || ''),
     description: String(a.description || ''),
+    color: String(a.color || ''),
   };
 }
 
@@ -113,10 +118,6 @@ export function seedContent() {
   try {
     if (!getKv('terms')) {
       setKv('terms', JSON.stringify({ version: DEFAULT_TERMS_VERSION, body: DEFAULT_TERMS_BODY }));
-    }
-
-    if (!getKv('links')) {
-      setKv('links', JSON.stringify(DEFAULT_LINKS));
     }
 
     const count = db.prepare('SELECT COUNT(*) AS n FROM credits').get().n;

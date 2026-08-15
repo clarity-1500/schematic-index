@@ -1,12 +1,32 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import multer from 'multer';
 import { db } from './db.js';
-import { config } from './config.js';
+import { config, paths } from './config.js';
 import { invalidatePosts, invalidateContent } from './cache.js';
-import { getCreditsAdmin, getTerms, getLinks, getJsonKv, setKv } from './content.js';
+import { getCreditsAdmin, getTerms, getLinksAdmin, getJsonKv, setKv } from './content.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const linkIconsDir = path.join(paths.files, 'link');
+fs.mkdirSync(linkIconsDir, { recursive: true });
+
+function iconExtension(mime) {
+  if (mime === 'image/png') return '.png';
+  if (mime === 'image/jpeg') return '.jpg';
+  if (mime === 'image/gif') return '.gif';
+  if (mime === 'image/webp') return '.webp';
+  return null;
+}
+
+const iconUpload = multer({
+  storage: multer.diskStorage({
+    destination: linkIconsDir,
+    filename: (req, file, cb) => cb(null, crypto.randomBytes(8).toString('hex') + (iconExtension(file.mimetype) || '.png')),
+  }),
+  limits: { fileSize: 1024 * 1024, files: 1 },
+}).single('icon');
 
 function requireOwner(req, res, next) {
   if (!config.ownerKey) {
@@ -283,7 +303,7 @@ export function registerAdminRoutes(app) {
       credits: getCreditsAdmin(),
       announcement: getJsonKv('announcement', null),
       terms: getTerms(),
-      links: getLinks(),
+      links: getLinksAdmin(),
     });
   });
 
@@ -339,10 +359,11 @@ export function registerAdminRoutes(app) {
     const title = String(req.body?.title || '').trim();
     const tag = String(req.body?.tag || '').trim();
     const description = String(req.body?.description || '').trim();
+    const color = String(req.body?.color || '').trim();
     const active = req.body?.active !== false && !!title;
 
     if (active) {
-      setKv('announcement', JSON.stringify({ id: String(Date.now()), title, tag, description, active: true }));
+      setKv('announcement', JSON.stringify({ id: String(Date.now()), title, tag, description, color, active: true }));
     } else {
       setKv('announcement', JSON.stringify({ active: false }));
     }
@@ -364,13 +385,36 @@ export function registerAdminRoutes(app) {
     res.json({ ok: true, version });
   });
 
-  app.put('/admin/api/links', owner, (req, res) => {
-    const links = {
-      discord: String(req.body?.discord || '').trim(),
-      modrinth: String(req.body?.modrinth || '').trim(),
-      support: String(req.body?.support || '').trim(),
-    };
-    setKv('links', JSON.stringify(links));
+  app.post('/admin/api/links', owner, iconUpload, (req, res) => {
+    const url = String(req.body?.url || '').trim();
+    const label = String(req.body?.label || '').trim();
+
+    if (!url) {
+      if (req.file) fs.promises.unlink(req.file.path).catch(() => {});
+      return res.status(400).json({ error: 'no_url', message: 'A URL is required.' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'no_icon', message: 'An icon image is required.' });
+    }
+
+    const iconKey = `link/${req.file.filename}`;
+    const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM links').get().p;
+    db.prepare('INSERT INTO links (icon_key, url, label, position, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(iconKey, url, label, position, Date.now());
+
+    invalidateContent();
+    res.status(201).json({ ok: true });
+  });
+
+  app.delete('/admin/api/links/:id', owner, (req, res) => {
+    const row = db.prepare('SELECT icon_key FROM links WHERE id = ?').get(Number(req.params.id));
+
+    if (row?.icon_key) {
+      fs.promises.unlink(path.join(paths.files, row.icon_key)).catch(() => {});
+    }
+
+    db.prepare('DELETE FROM links WHERE id = ?').run(Number(req.params.id));
     invalidateContent();
     res.json({ ok: true });
   });
