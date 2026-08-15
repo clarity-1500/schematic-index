@@ -72,6 +72,7 @@ export function getCreditsAdmin() {
   return db.prepare('SELECT * FROM credits ORDER BY position ASC, id ASC').all().map((r) => ({
     id: r.id,
     username: r.username,
+    nickname: r.nickname || '',
     role: r.role || '',
     description: r.description || '',
   }));
@@ -97,6 +98,7 @@ export function buildContent() {
   return {
     credits: getCreditsAdmin().map((c) => ({
       username: c.username,
+      nickname: c.nickname,
       role: c.role,
       description: c.description,
       avatarUrl: avatarUrl(c.username),

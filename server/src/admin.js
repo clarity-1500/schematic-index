@@ -289,6 +289,7 @@ export function registerAdminRoutes(app) {
 
   app.post('/admin/api/credits', owner, (req, res) => {
     const username = String(req.body?.username || '').trim();
+    const nickname = String(req.body?.nickname || '').trim();
     const role = String(req.body?.role || '').trim();
     const description = String(req.body?.description || '').trim();
 
@@ -298,8 +299,8 @@ export function registerAdminRoutes(app) {
 
     const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM credits').get().p;
     const info = db.prepare(
-      'INSERT INTO credits (username, role, description, position, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(username, role, description, position, Date.now());
+      'INSERT INTO credits (username, nickname, role, description, position, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(username, nickname, role, description, position, Date.now());
 
     invalidateContent();
     res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
@@ -314,6 +315,7 @@ export function registerAdminRoutes(app) {
     }
 
     const username = String(req.body?.username ?? row.username).trim();
+    const nickname = String(req.body?.nickname ?? row.nickname ?? '').trim();
     const role = String(req.body?.role ?? row.role ?? '').trim();
     const description = String(req.body?.description ?? row.description ?? '').trim();
 
@@ -321,8 +323,8 @@ export function registerAdminRoutes(app) {
       return res.status(400).json({ error: 'no_username', message: 'A Minecraft username is required.' });
     }
 
-    db.prepare('UPDATE credits SET username = ?, role = ?, description = ? WHERE id = ?')
-      .run(username, role, description, id);
+    db.prepare('UPDATE credits SET username = ?, nickname = ?, role = ?, description = ? WHERE id = ?')
+      .run(username, nickname, role, description, id);
     invalidateContent();
     res.json({ ok: true });
   });

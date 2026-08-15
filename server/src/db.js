@@ -66,6 +66,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS credits (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     username    TEXT NOT NULL,
+    nickname    TEXT,
     role        TEXT,
     description TEXT,
     position    INTEGER NOT NULL DEFAULT 0,
@@ -142,5 +143,12 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_views_post ON views(post_id, day);
   CREATE INDEX IF NOT EXISTS idx_follows_created ON follows(created_at);
 `);
+
+// Migration: add the nickname column to credits tables created before it existed.
+const creditColumns = db.prepare("PRAGMA table_info('credits')").all().map((c) => c.name);
+
+if (!creditColumns.includes('nickname')) {
+  db.exec('ALTER TABLE credits ADD COLUMN nickname TEXT');
+}
 
 console.log(`[db] ready at ${paths.db}`);

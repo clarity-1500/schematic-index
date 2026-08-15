@@ -128,8 +128,9 @@
         <p class="muted" style="margin-top:0">Shown in the mod's Settings panel. The head image is pulled live from the Minecraft username.</p>
         <div class="grid2">
           <div><label>Minecraft username</label><input id="cr-username" placeholder="Fudgedy" /></div>
-          <div><label>Role / tag</label><input id="cr-role" placeholder="Creator & Developer" /></div>
+          <div><label>Nickname (optional, replaces the name)</label><input id="cr-nick" placeholder="Leave blank to show the username" /></div>
         </div>
+        <label>Role / tag</label><input id="cr-role" placeholder="Creator & Developer" />
         <label>Contribution</label><textarea id="cr-desc" placeholder="What they contributed"></textarea>
         <div style="margin-top:12px"><button class="primary" onclick="addCredit()">Add credit</button></div>
         <div id="creditsList" style="margin-top:14px"></div>
@@ -245,7 +246,7 @@ async function loadContent() {
     <div class="row" style="justify-content:space-between; border-bottom:1px solid var(--line); padding:8px 0; gap:10px">
       <div class="row" style="gap:10px">
         <img src="https://mc-heads.net/avatar/${encodeURIComponent(cr.username)}/28.png" width="28" height="28" style="border-radius:4px" alt="" />
-        <div><b>${esc(cr.username)}</b> <span class="muted">${esc(cr.role)}</span><br><span class="muted" style="font-size:12px">${esc(cr.description)}</span></div>
+        <div><b>${esc(cr.nickname || cr.username)}</b> ${cr.nickname ? `<span class="muted">(${esc(cr.username)})</span>` : ''} <span class="muted">${esc(cr.role)}</span><br><span class="muted" style="font-size:12px">${esc(cr.description)}</span></div>
       </div>
       <button class="small danger" onclick="delCredit(${cr.id})">Remove</button>
     </div>`).join('') || '<span class="muted">No credits yet.</span>';
@@ -264,9 +265,9 @@ async function loadContent() {
   document.getElementById('ln-support').value = c.links?.support ?? '';
 }
 async function addCredit() {
-  const body = { username:v('cr-username'), role:v('cr-role'), description:v('cr-desc') };
+  const body = { username:v('cr-username'), nickname:v('cr-nick'), role:v('cr-role'), description:v('cr-desc') };
   const res = await api('/admin/api/credits', { method:'POST', body: JSON.stringify(body) });
-  if (res.ok) { toast('Credit added'); ['cr-username','cr-role','cr-desc'].forEach(id=>document.getElementById(id).value=''); loadContent(); }
+  if (res.ok) { toast('Credit added'); ['cr-username','cr-nick','cr-role','cr-desc'].forEach(id=>document.getElementById(id).value=''); loadContent(); }
   else toast('Username required');
 }
 async function delCredit(id){ if(confirm('Remove this credit?')){ await api('/admin/api/credits/'+id,{method:'DELETE'}); loadContent(); toast('Removed'); } }
