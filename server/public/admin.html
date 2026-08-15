@@ -68,6 +68,7 @@
     <button class="tab" data-tab="posts">Posts</button>
     <button class="tab" data-tab="reports">Reports</button>
     <button class="tab" data-tab="codes">Codes</button>
+    <button class="tab" data-tab="content">Content</button>
   </nav>
   <main>
     <section id="tab-dashboard">
@@ -120,6 +121,52 @@
       </div>
       <div class="card"><table id="codesTable"><thead><tr><th>Code</th><th>Name</th><th>State</th><th></th></tr></thead><tbody></tbody></table></div>
     </section>
+
+    <section id="tab-content" class="hide">
+      <div class="card">
+        <h3 style="margin-top:0">Credits</h3>
+        <p class="muted" style="margin-top:0">Shown in the mod's Settings panel. The head image is pulled live from the Minecraft username.</p>
+        <div class="grid2">
+          <div><label>Minecraft username</label><input id="cr-username" placeholder="Fudgedy" /></div>
+          <div><label>Role / tag</label><input id="cr-role" placeholder="Creator & Developer" /></div>
+        </div>
+        <label>Contribution</label><textarea id="cr-desc" placeholder="What they contributed"></textarea>
+        <div style="margin-top:12px"><button class="primary" onclick="addCredit()">Add credit</button></div>
+        <div id="creditsList" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Announcement banner</h3>
+        <p class="muted" style="margin-top:0">Drops down for every user until they dismiss it. Publishing again re-shows it to everyone.</p>
+        <div class="grid2">
+          <div><label>Title</label><input id="an-title" placeholder="Server maintenance" /></div>
+          <div><label>Tag</label><input id="an-tag" placeholder="Notice" /></div>
+        </div>
+        <label>Description</label><textarea id="an-desc" placeholder="What you want everyone to know"></textarea>
+        <div class="row" style="margin-top:12px; gap:8px">
+          <button class="primary" onclick="saveAnnouncement()">Publish banner</button>
+          <button class="small danger" onclick="clearAnnouncement()">Take down</button>
+          <span id="an-state" class="muted" style="font-size:12px"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Terms of service</h3>
+        <p class="muted" style="margin-top:0">The mod caches the latest terms locally, so raising the version re-prompts users. Blank line = new paragraph.</p>
+        <div style="max-width:160px"><label>Version</label><input id="tm-version" placeholder="auto +1" /></div>
+        <label>Body</label><textarea id="tm-body" style="min-height:180px"></textarea>
+        <div style="margin-top:12px"><button class="primary" onclick="saveTerms()">Save terms</button></div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Links</h3>
+        <p class="muted" style="margin-top:0">Where the mod's buttons point. Leave blank to hide a link.</p>
+        <label>Discord</label><input id="ln-discord" placeholder="https://discord.gg/..." />
+        <label>Modrinth</label><input id="ln-modrinth" placeholder="https://modrinth.com/project/..." />
+        <label>Support</label><input id="ln-support" placeholder="https://..." />
+        <div style="margin-top:12px"><button class="primary" onclick="saveLinks()">Save links</button></div>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -163,15 +210,16 @@ function logout() { stopPolling(); localStorage.removeItem('ownerKey'); KEY=''; 
 function showApp() {
   document.getElementById('login').classList.add('hide');
   document.getElementById('app').classList.remove('hide');
-  loadDashboard(); loadNews(); loadPosts(); loadReports(); loadCodes();
+  loadDashboard(); loadNews(); loadPosts(); loadReports(); loadCodes(); loadContent();
   startPolling();
 }
 
 document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
-  ['dashboard','news','posts','reports','codes'].forEach(t => document.getElementById('tab-'+t).classList.toggle('hide', t!==b.dataset.tab));
+  ['dashboard','news','posts','reports','codes','content'].forEach(t => document.getElementById('tab-'+t).classList.toggle('hide', t!==b.dataset.tab));
   if (b.dataset.tab === 'dashboard') loadDashboard();
+  if (b.dataset.tab === 'content') loadContent();
 });
 
 async function loadNews() {
@@ -189,6 +237,58 @@ async function postNews() {
   else toast('Missing fields');
 }
 async function delNews(id){ if(confirm('Delete this update?')){ await api('/admin/api/news/'+id,{method:'DELETE'}); loadNews(); toast('Deleted'); } }
+
+async function loadContent() {
+  const c = await (await api('/admin/api/content')).json();
+
+  document.getElementById('creditsList').innerHTML = (c.credits || []).map(cr => `
+    <div class="row" style="justify-content:space-between; border-bottom:1px solid var(--line); padding:8px 0; gap:10px">
+      <div class="row" style="gap:10px">
+        <img src="https://mc-heads.net/avatar/${encodeURIComponent(cr.username)}/28.png" width="28" height="28" style="border-radius:4px" alt="" />
+        <div><b>${esc(cr.username)}</b> <span class="muted">${esc(cr.role)}</span><br><span class="muted" style="font-size:12px">${esc(cr.description)}</span></div>
+      </div>
+      <button class="small danger" onclick="delCredit(${cr.id})">Remove</button>
+    </div>`).join('') || '<span class="muted">No credits yet.</span>';
+
+  const a = c.announcement || {};
+  document.getElementById('an-title').value = a.active === false ? '' : (a.title || '');
+  document.getElementById('an-tag').value = a.active === false ? '' : (a.tag || '');
+  document.getElementById('an-desc').value = a.active === false ? '' : (a.description || '');
+  document.getElementById('an-state').textContent = (a && a.active && a.title) ? 'Live now' : 'Not shown';
+
+  document.getElementById('tm-version').value = c.terms?.version ?? '';
+  document.getElementById('tm-body').value = c.terms?.body ?? '';
+
+  document.getElementById('ln-discord').value = c.links?.discord ?? '';
+  document.getElementById('ln-modrinth').value = c.links?.modrinth ?? '';
+  document.getElementById('ln-support').value = c.links?.support ?? '';
+}
+async function addCredit() {
+  const body = { username:v('cr-username'), role:v('cr-role'), description:v('cr-desc') };
+  const res = await api('/admin/api/credits', { method:'POST', body: JSON.stringify(body) });
+  if (res.ok) { toast('Credit added'); ['cr-username','cr-role','cr-desc'].forEach(id=>document.getElementById(id).value=''); loadContent(); }
+  else toast('Username required');
+}
+async function delCredit(id){ if(confirm('Remove this credit?')){ await api('/admin/api/credits/'+id,{method:'DELETE'}); loadContent(); toast('Removed'); } }
+async function saveAnnouncement() {
+  const body = { title:v('an-title'), tag:v('an-tag'), description:v('an-desc'), active:true };
+  const res = await api('/admin/api/announcement', { method:'PUT', body: JSON.stringify(body) });
+  if (res.ok) { toast('Banner published'); loadContent(); } else toast('Title required');
+}
+async function clearAnnouncement() {
+  await api('/admin/api/announcement', { method:'PUT', body: JSON.stringify({ active:false }) });
+  toast('Banner taken down'); loadContent();
+}
+async function saveTerms() {
+  const body = { version:v('tm-version'), body:v('tm-body') };
+  const res = await api('/admin/api/terms', { method:'PUT', body: JSON.stringify(body) });
+  if (res.ok) { toast('Terms saved'); loadContent(); } else toast('Body required');
+}
+async function saveLinks() {
+  const body = { discord:v('ln-discord'), modrinth:v('ln-modrinth'), support:v('ln-support') };
+  await api('/admin/api/links', { method:'PUT', body: JSON.stringify(body) });
+  toast('Links saved');
+}
 
 async function loadPosts() {
   const { posts } = await (await api('/admin/api/posts')).json();

@@ -3,7 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import { config } from './config.js';
-import { invalidatePosts } from './cache.js';
+import { invalidatePosts, invalidateContent } from './cache.js';
+import { getCreditsAdmin, getTerms, getLinks, getJsonKv, setKv } from './content.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -274,6 +275,101 @@ export function registerAdminRoutes(app) {
       }
     }
 
+    res.json({ ok: true });
+  });
+
+  app.get('/admin/api/content', owner, (req, res) => {
+    res.json({
+      credits: getCreditsAdmin(),
+      announcement: getJsonKv('announcement', null),
+      terms: getTerms(),
+      links: getLinks(),
+    });
+  });
+
+  app.post('/admin/api/credits', owner, (req, res) => {
+    const username = String(req.body?.username || '').trim();
+    const role = String(req.body?.role || '').trim();
+    const description = String(req.body?.description || '').trim();
+
+    if (!username) {
+      return res.status(400).json({ error: 'no_username', message: 'A Minecraft username is required.' });
+    }
+
+    const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM credits').get().p;
+    const info = db.prepare(
+      'INSERT INTO credits (username, role, description, position, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(username, role, description, position, Date.now());
+
+    invalidateContent();
+    res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+  });
+
+  app.post('/admin/api/credits/:id', owner, (req, res) => {
+    const id = Number(req.params.id);
+    const row = db.prepare('SELECT * FROM credits WHERE id = ?').get(id);
+
+    if (!row) {
+      return res.status(404).json({ error: 'not_found', message: 'No such credit.' });
+    }
+
+    const username = String(req.body?.username ?? row.username).trim();
+    const role = String(req.body?.role ?? row.role ?? '').trim();
+    const description = String(req.body?.description ?? row.description ?? '').trim();
+
+    if (!username) {
+      return res.status(400).json({ error: 'no_username', message: 'A Minecraft username is required.' });
+    }
+
+    db.prepare('UPDATE credits SET username = ?, role = ?, description = ? WHERE id = ?')
+      .run(username, role, description, id);
+    invalidateContent();
+    res.json({ ok: true });
+  });
+
+  app.delete('/admin/api/credits/:id', owner, (req, res) => {
+    db.prepare('DELETE FROM credits WHERE id = ?').run(Number(req.params.id));
+    invalidateContent();
+    res.json({ ok: true });
+  });
+
+  app.put('/admin/api/announcement', owner, (req, res) => {
+    const title = String(req.body?.title || '').trim();
+    const tag = String(req.body?.tag || '').trim();
+    const description = String(req.body?.description || '').trim();
+    const active = req.body?.active !== false && !!title;
+
+    if (active) {
+      setKv('announcement', JSON.stringify({ id: String(Date.now()), title, tag, description, active: true }));
+    } else {
+      setKv('announcement', JSON.stringify({ active: false }));
+    }
+
+    invalidateContent();
+    res.json({ ok: true, active });
+  });
+
+  app.put('/admin/api/terms', owner, (req, res) => {
+    const body = String(req.body?.body || '').trim();
+
+    if (!body) {
+      return res.status(400).json({ error: 'no_body', message: 'Terms body is required.' });
+    }
+
+    const version = Number(req.body?.version) || (getTerms().version + 1);
+    setKv('terms', JSON.stringify({ version, body }));
+    invalidateContent();
+    res.json({ ok: true, version });
+  });
+
+  app.put('/admin/api/links', owner, (req, res) => {
+    const links = {
+      discord: String(req.body?.discord || '').trim(),
+      modrinth: String(req.body?.modrinth || '').trim(),
+      support: String(req.body?.support || '').trim(),
+    };
+    setKv('links', JSON.stringify(links));
+    invalidateContent();
     res.json({ ok: true });
   });
 }

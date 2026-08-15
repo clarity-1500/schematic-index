@@ -3,9 +3,11 @@ import { db } from './db.js';
 import { paths } from './config.js';
 import { serializePost, serializeNews } from './serialize.js';
 import { cached } from './cache.js';
+import { buildContent } from './content.js';
 
 const INDEX_TTL_MS = 15_000;
 const NEWS_TTL_MS = 30_000;
+const CONTENT_TTL_MS = 30_000;
 const likedByToken = db.prepare('SELECT post_id FROM likes WHERE token = ?');
 
 const CATEGORIES = new Set([
@@ -101,5 +103,10 @@ export function registerReadRoutes(app) {
     const news = cached('news:all', NEWS_TTL_MS, () =>
       db.prepare('SELECT * FROM news ORDER BY posted_at DESC, id DESC').all().map(serializeNews));
     res.json({ news });
+  });
+
+  app.get('/content', (req, res) => {
+    const content = cached('content:all', CONTENT_TTL_MS, () => buildContent());
+    res.json(content);
   });
 }

@@ -30,3 +30,11 @@ export function invalidatePosts() {
     }
   }
 }
+
+export function invalidateContent() {
+  for (const key of [...store.keys()]) {
+    if (key.startsWith('content:')) {
+      store.delete(key);
+    }
+  }
+}

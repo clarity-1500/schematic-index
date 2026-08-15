@@ -62,6 +62,22 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_news_posted ON news(posted_at);
 
+  -- Server-editable credits list shown in the mod's Settings panel.
+  CREATE TABLE IF NOT EXISTS credits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    username    TEXT NOT NULL,
+    role        TEXT,
+    description TEXT,
+    position    INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+  );
+
+  -- Key/value store for singleton editable content (announcement, terms, links).
+  CREATE TABLE IF NOT EXISTS content_kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS reports (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     post_id         TEXT NOT NULL,
