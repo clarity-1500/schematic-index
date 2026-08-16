@@ -6,7 +6,7 @@ import multer from 'multer';
 import { db } from './db.js';
 import { config, paths } from './config.js';
 import { invalidatePosts, invalidateContent } from './cache.js';
-import { getCreditsAdmin, getTerms, getLinksAdmin, getPartnersAdmin, getJsonKv, setKv } from './content.js';
+import { getCreditsAdmin, getTerms, getLinksAdmin, getPartnersAdmin, getJsonKv, getKv, setKv } from './content.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const linkIconsDir = path.join(paths.files, 'link');
@@ -305,6 +305,7 @@ export function registerAdminRoutes(app) {
       terms: getTerms(),
       links: getLinksAdmin(),
       partners: getPartnersAdmin(),
+      discord: getKv('discord') || '',
     });
   });
 
@@ -371,6 +372,12 @@ export function registerAdminRoutes(app) {
 
     invalidateContent();
     res.json({ ok: true, active });
+  });
+
+  app.put('/admin/api/discord', owner, (req, res) => {
+    setKv('discord', String(req.body?.url || '').trim());
+    invalidateContent();
+    res.json({ ok: true });
   });
 
   app.put('/admin/api/terms', owner, (req, res) => {

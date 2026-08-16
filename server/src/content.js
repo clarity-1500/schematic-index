@@ -125,6 +125,7 @@ export function buildContent() {
     terms: getTerms(),
     links: getLinks(),
     partners: getPartners(),
+    discord: getKv('discord') || '',
   };
 }
 

@@ -168,6 +168,12 @@
       </div>
 
       <div class="card">
+        <h3 style="margin-top:0">Community Discord</h3>
+        <p class="muted" style="margin-top:0">The invite the mod's "Something went wrong" error screen links to for bug reports.</p>
+        <div class="row" style="gap:8px"><input id="dc-url" placeholder="https://discord.gg/..." style="flex:1" /><button class="primary" onclick="saveDiscord()">Save</button></div>
+      </div>
+
+      <div class="card">
         <h3 style="margin-top:0">Links</h3>
         <p class="muted" style="margin-top:0">Shown as icons at the bottom of the mod's left rail. Upload a square icon (PNG/JPG) and the URL it opens.</p>
         <div class="grid2">
@@ -281,6 +287,8 @@ async function loadContent() {
   if (a.color) document.getElementById('an-color').value = a.color;
   document.getElementById('an-state').textContent = (a && a.active && a.title) ? 'Live now' : 'Not shown';
 
+  document.getElementById('dc-url').value = c.discord ?? '';
+
   document.getElementById('tm-version').value = c.terms?.version ?? '';
   document.getElementById('tm-body').value = c.terms?.body ?? '';
 
@@ -351,6 +359,10 @@ async function addPartner() {
   else toast('Icon and URL required');
 }
 async function delPartner(id){ if(confirm('Remove this partner?')){ await api('/admin/api/partners/'+id,{method:'DELETE'}); loadContent(); toast('Removed'); } }
+async function saveDiscord() {
+  await api('/admin/api/discord', { method:'PUT', body: JSON.stringify({ url: v('dc-url') }) });
+  toast('Discord saved');
+}
 
 async function loadPosts() {
   const { posts } = await (await api('/admin/api/posts')).json();
