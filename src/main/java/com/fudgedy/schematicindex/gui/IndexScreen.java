@@ -49,7 +49,7 @@ public class IndexScreen extends Screen {
 	private static final int TOP_BAR_HEIGHT = 32;
 	private static final int RAIL_WIDTH = 34;
 	private static final int RAIL_ITEM_HEIGHT = 34;
-	private static final int PARTNER_RAIL_WIDTH = 82;
+	private static final int PARTNER_RAIL_WIDTH = 58;
 	
 	private static final float RAIL_HOVER_GROW = 0.14F;
 	private static final int RAIL_ITEM_GAP = 8;
@@ -1048,45 +1048,48 @@ public class IndexScreen extends Screen {
 		ctx.fill(railX, TOP_BAR_HEIGHT, railX + 1, this.height, Theme.HAIRLINE);
 
 		int centreX = railX + PARTNER_RAIL_WIDTH / 2;
-		String header = Theme.bold("Partners");
+
+		String header = "Partners";
 		Theme.text(ctx, this.font, header, centreX - this.font.width(header) / 2, TOP_BAR_HEIGHT + 8, Theme.TEXT_MUTE);
 
-		int icon = 30;
-		int y = TOP_BAR_HEIGHT + 24;
+		int item = RAIL_ITEM_HEIGHT;
+		int size = 22;
+		int y = TOP_BAR_HEIGHT + 22;
 
 		for (RemoteContent.Partner partner : partners) {
-			int entryHeight = icon + 3 + this.font.lineHeight + 12;
-
 			if (y > this.height) {
 				break;
 			}
 
 			Rect rect = new Rect();
-			rect.set(railX, y, PARTNER_RAIL_WIDTH, entryHeight);
+			rect.set(railX, y, PARTNER_RAIL_WIDTH, item);
 			this.partnerRects.add(rect);
 
 			boolean hovered = rect.contains(mouseX, mouseY);
-			int iconX = centreX - icon / 2;
+			int iconX = centreX - size / 2;
+			int iconY = y + (item - size) / 2;
 
 			if (hovered) {
-				Theme.roundedRect(ctx, railX + 6, y - 3, PARTNER_RAIL_WIDTH - 12, entryHeight - 3, Theme.RADIUS_CARD, Theme.SURFACE_ELEVATED);
+				Theme.roundedRect(ctx, iconX - 3, iconY - 3, size + 6, size + 6, Theme.RADIUS_PILL, Theme.SURFACE_ELEVATED);
 			}
 
 			Identifier texture = ImageStore.avatar(partner.iconUrl());
 
 			if (texture != null) {
-				Theme.image(ctx, texture, iconX, y, icon, icon, 64, 64);
+				Theme.image(ctx, texture, iconX, iconY, size, size, 64, 64);
 			} else {
-				Theme.roundedRect(ctx, iconX, y, icon, icon, 6, Theme.RAIL_TILE);
+				Theme.roundedRect(ctx, iconX, iconY, size, size, 5, Theme.RAIL_TILE);
 			}
 
-			if (!partner.name().isBlank()) {
-				String name = Theme.clip(this.font, partner.name(), PARTNER_RAIL_WIDTH - 10);
-				Theme.text(ctx, this.font, name, centreX - this.font.width(name) / 2, y + icon + 4,
-						hovered ? Theme.TEXT : Theme.TEXT_MUTE);
+			if (hovered && !partner.name().isBlank()) {
+				int width = this.font.width(partner.name()) + 8;
+				int tipX = railX - width - 4;
+				int tipY = y + (item - 12) / 2;
+				Theme.roundedRect(ctx, tipX, tipY, width, 12, Theme.RADIUS_PILL, Theme.SURFACE_ELEVATED);
+				Theme.text(ctx, this.font, partner.name(), tipX + 4, tipY + 2, Theme.TEXT);
 			}
 
-			y += entryHeight;
+			y += item;
 		}
 	}
 
