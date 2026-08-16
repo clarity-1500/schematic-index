@@ -4,6 +4,20 @@ import { fileUrl } from './config.js';
 const imagesStmt = db.prepare('SELECT file_key FROM post_images WHERE post_id = ? ORDER BY position');
 const likedStmt = db.prepare('SELECT 1 FROM likes WHERE post_id = ? AND token = ?');
 
+// Trending = a recent surge, not lifetime popularity: only activity in the last
+// window counts, so an old post with old likes scores 0 while a fresh burst ranks high.
+const TREND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const recentDownloadsStmt = db.prepare('SELECT COUNT(*) n FROM downloads WHERE post_id = ? AND day >= ?');
+const recentLikesStmt = db.prepare('SELECT COUNT(*) n FROM likes WHERE post_id = ? AND created_at >= ?');
+
+function trendScore(postId) {
+  const since = Date.now() - TREND_WINDOW_MS;
+  const sinceDay = new Date(since).toISOString().slice(0, 10);
+  const downloads = recentDownloadsStmt.get(postId, sinceDay).n;
+  const likes = recentLikesStmt.get(postId, since).n;
+  return downloads + likes * 2;
+}
+
 export function isLiked(postId, token) {
   return token ? !!likedStmt.get(postId, token) : false;
 }
@@ -30,6 +44,7 @@ export function serializePost(row, token) {
     fileHash: row.file_hash,
     fileSize: row.file_size,
     liked: isLiked(row.id, token),
+    trendScore: trendScore(row.id),
   };
 }
 
