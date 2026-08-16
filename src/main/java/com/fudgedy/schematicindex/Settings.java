@@ -24,6 +24,9 @@ public final class Settings {
 	private static final String KEY_DEVICE_TOKEN = "device_token";
 	private static final String KEY_TERMS = "terms_accepted";
 	private static final String KEY_SKIP_DESIGNER_WARNING = "skip_designer_warning";
+	private static final String KEY_TERMS_BODY = "terms_body";
+	private static final String KEY_TERMS_VERSION = "terms_version";
+	private static final String KEY_DISMISSED_ANNOUNCEMENT = "dismissed_announcement";
 
 	private static final String OFFICIAL_API = "https://schematic-index-production.up.railway.app";
 
@@ -34,6 +37,10 @@ public final class Settings {
 
 	private static boolean termsAccepted;
 	private static boolean skipDesignerWarning;
+
+	private static @Nullable String cachedTermsBody;
+	private static int cachedTermsVersion;
+	private static @Nullable String dismissedAnnouncement;
 
 	private static boolean toasts = true;
 
@@ -131,6 +138,41 @@ public final class Settings {
 		save();
 	}
 
+	public static @Nullable String cachedTermsBody() {
+		return cachedTermsBody != null && !cachedTermsBody.isBlank() ? cachedTermsBody : null;
+	}
+
+	public static int cachedTermsVersion() {
+		return cachedTermsVersion;
+	}
+
+	public static void cacheTerms(int version, String body) {
+		if (body == null || body.isBlank()) {
+			return;
+		}
+
+		if (version == cachedTermsVersion && body.equals(cachedTermsBody)) {
+			return;
+		}
+
+		cachedTermsVersion = version;
+		cachedTermsBody = body;
+		save();
+	}
+
+	public static @Nullable String dismissedAnnouncement() {
+		return dismissedAnnouncement;
+	}
+
+	public static void dismissAnnouncement(String id) {
+		if (id == null || id.equals(dismissedAnnouncement)) {
+			return;
+		}
+
+		dismissedAnnouncement = id;
+		save();
+	}
+
 	public static void revokeTerms() {
 		termsAccepted = false;
 		save();
@@ -204,6 +246,9 @@ public final class Settings {
 		deviceToken = properties.getProperty(KEY_DEVICE_TOKEN, "");
 		termsAccepted = parse(properties.getProperty(KEY_TERMS), false);
 		skipDesignerWarning = parse(properties.getProperty(KEY_SKIP_DESIGNER_WARNING), false);
+		cachedTermsBody = properties.getProperty(KEY_TERMS_BODY, "");
+		cachedTermsVersion = parseInt(properties.getProperty(KEY_TERMS_VERSION), 0);
+		dismissedAnnouncement = properties.getProperty(KEY_DISMISSED_ANNOUNCEMENT, "");
 
 		String stored = properties.getProperty(KEY_DOWNLOAD_DIR);
 		customDownloadDirectory = stored == null || stored.isBlank() ? null : Path.of(stored.trim());
@@ -220,6 +265,15 @@ public final class Settings {
 		properties.setProperty(KEY_NOTIFICATIONS, Boolean.toString(notifications));
 		properties.setProperty(KEY_TERMS, Boolean.toString(termsAccepted));
 		properties.setProperty(KEY_SKIP_DESIGNER_WARNING, Boolean.toString(skipDesignerWarning));
+		properties.setProperty(KEY_TERMS_VERSION, Integer.toString(cachedTermsVersion));
+
+		if (cachedTermsBody != null && !cachedTermsBody.isBlank()) {
+			properties.setProperty(KEY_TERMS_BODY, cachedTermsBody);
+		}
+
+		if (dismissedAnnouncement != null && !dismissedAnnouncement.isBlank()) {
+			properties.setProperty(KEY_DISMISSED_ANNOUNCEMENT, dismissedAnnouncement);
+		}
 
 		if (deviceToken != null && !deviceToken.isBlank()) {
 			properties.setProperty(KEY_DEVICE_TOKEN, deviceToken);

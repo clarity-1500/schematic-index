@@ -38,6 +38,7 @@ public final class ImageStore {
 	private static final int TARGET_HEIGHT = 288;
 	private static final int THUMB_WIDTH = 256;
 	private static final int THUMB_HEIGHT = 144;
+	private static final int AVATAR_SIZE = 64;
 	private static final int MAX_IMAGES = 64;
 	private static final int UPLOADS_PER_FRAME = 2;
 
@@ -129,6 +130,14 @@ public final class ImageStore {
 		return textureAt(ref, TARGET_WIDTH, TARGET_HEIGHT, "f:");
 	}
 
+	public static @Nullable Identifier avatar(String ref) {
+		if (ref == null || ref.isBlank()) {
+			return null;
+		}
+
+		return request("a:" + ref, () -> loadSquare(ref, AVATAR_SIZE));
+	}
+
 	public static @Nullable Identifier thumbnail(String ref) {
 		return textureAt(ref, THUMB_WIDTH, THUMB_HEIGHT, "t:");
 	}
@@ -190,6 +199,33 @@ public final class ImageStore {
 		}
 
 		return decodeStream(new ByteArrayInputStream(bytes), width, height);
+	}
+
+	private static @Nullable NativeImage loadSquare(String ref, int size) throws Exception {
+		byte[] bytes;
+
+		if (ref.startsWith("http://") || ref.startsWith("https://")) {
+			bytes = fetchCached(ref);
+		} else {
+			bytes = Files.readAllBytes(Path.of(ref));
+		}
+
+		return decodeSquare(new ByteArrayInputStream(bytes), size);
+	}
+
+	private static NativeImage decodeSquare(InputStream input, int size) throws IOException {
+		try (input) {
+			NativeImage source = NativeImage.read(input);
+			NativeImage target = new NativeImage(source.format(), size, size, false);
+
+			int side = Math.min(source.getWidth(), source.getHeight());
+			int cropX = (source.getWidth() - side) / 2;
+			int cropY = (source.getHeight() - side) / 2;
+
+			source.resizeSubRectTo(cropX, cropY, side, side, target);
+			source.close();
+			return target;
+		}
 	}
 
 	private static NativeImage decodeStream(InputStream input, int targetWidth, int targetHeight) throws IOException {

@@ -90,6 +90,7 @@ public final class Catalogue {
 				List<SchematicEntry> fetched = fetchAll();
 				setPosts(fetched);
 				NewsFeed.refresh();
+				RemoteContent.refresh();
 				state = State.READY;
 			} catch (Throwable e) {
 				SchematicIndexMod.LOGGER.info("Catalogue fetch failed: {}", e.toString());

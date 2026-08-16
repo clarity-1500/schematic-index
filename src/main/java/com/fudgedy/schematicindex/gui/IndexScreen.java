@@ -9,6 +9,7 @@ import com.fudgedy.schematicindex.catalogue.Category;
 import com.fudgedy.schematicindex.catalogue.Download;
 import com.fudgedy.schematicindex.catalogue.Follows;
 import com.fudgedy.schematicindex.catalogue.NewsFeed;
+import com.fudgedy.schematicindex.catalogue.RemoteContent;
 import com.fudgedy.schematicindex.catalogue.SchematicEntry;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -48,6 +49,7 @@ public class IndexScreen extends Screen {
 	private static final int TOP_BAR_HEIGHT = 32;
 	private static final int RAIL_WIDTH = 34;
 	private static final int RAIL_ITEM_HEIGHT = 34;
+	private static final int PARTNER_RAIL_WIDTH = 82;
 	
 	private static final float RAIL_HOVER_GROW = 0.14F;
 	private static final int RAIL_ITEM_GAP = 8;
@@ -244,6 +246,17 @@ public class IndexScreen extends Screen {
 	private final Rect notificationsToggle = new Rect();
 	private final Rect termsButton = new Rect();
 
+	private @Nullable RemoteContent.Announcement bannerAnnouncement;
+	private @Nullable String bannerId;
+	private long bannerAnimStart;
+	private boolean bannerEntering;
+	private boolean bannerActive;
+	private final Rect bannerClose = new Rect();
+	private long lastContentPoll;
+	private int lastPartnerCount = -1;
+	private final List<Rect> railLinkRects = new ArrayList<>();
+	private final List<Rect> partnerRects = new ArrayList<>();
+
 	private static final String[][] TUTORIAL = {
 			{"Welcome to The Schematic Index",
 					"Browse the latest community schematics via posts and download them directly into your "
@@ -295,13 +308,7 @@ public class IndexScreen extends Screen {
 		SchematicPreview.discover();
 		Catalogue.ensureLoaded();
 
-		int available = this.width - RAIL_WIDTH - OUTER_MARGIN * 2;
-		this.contentWidth = Math.min(available, CONTENT_MAX_WIDTH);
-		this.contentX = RAIL_WIDTH + OUTER_MARGIN + (available - this.contentWidth) / 2;
-
-		this.columns = Math.max(2, Math.min(7, columnsFor(this.contentWidth) + Settings.gridDensity()));
-		this.cardWidth = (this.contentWidth - GUTTER * (this.columns - 1)) / this.columns;
-		this.cardHeight = imageHeight(this.cardWidth) + CAPTION_HEIGHT;
+		this.layoutContent();
 
 		int searchWidth = this.searchWidth();
 		int searchX = this.contentX + (this.contentWidth - searchWidth) / 2;
@@ -567,6 +574,11 @@ public class IndexScreen extends Screen {
 			this.refilter();
 		}
 
+		if (RemoteContent.partners().size() != this.lastPartnerCount) {
+			this.lastPartnerCount = RemoteContent.partners().size();
+			this.relayout();
+		}
+
 		this.renderBackground(ctx, mouseX, mouseY, partialTick);
 
 		boolean modalOpen = this.detail != null;
@@ -584,10 +596,21 @@ public class IndexScreen extends Screen {
 			this.renderGrid(ctx, hoverX, hoverY);
 			this.renderScrollbar(ctx);
 			this.renderChipRow(ctx, hoverX, hoverY);
+			this.renderPartnerRail(ctx, hoverX, hoverY);
 		}
 
 		this.renderRail(ctx, hoverX, hoverY);
 		this.renderTopBar(ctx, hoverX, hoverY);
+
+		long nowMs = System.currentTimeMillis();
+
+		if (nowMs - this.lastContentPoll > 10000L) {
+			this.lastContentPoll = nowMs;
+			RemoteContent.pollAsync();
+		}
+
+		this.updateBanner();
+		this.renderBanner(ctx, mouseX, mouseY);
 
 		this.searchBox.setVisible(this.gridPage());
 
@@ -648,7 +671,7 @@ public class IndexScreen extends Screen {
 		int bodyBottom = y + cardHeight - pad - 16 - 8;
 		int bodyWidth = cardWidth - pad * 2;
 
-		List<String> body = this.wrapParagraphs(TERMS_BODY, bodyWidth - 6);
+		List<String> body = this.wrapParagraphs(this.effectiveTermsBody(), bodyWidth - 6);
 		int contentHeight = body.size() * (line + 1);
 		int viewport = bodyBottom - bodyTop;
 		this.tosMaxScroll = Math.max(0.0F, contentHeight - viewport);
@@ -840,18 +863,12 @@ public class IndexScreen extends Screen {
 		int titleX = OUTER_MARGIN;
 		int titleRoom = searchX - titleX - 8;
 
-		String lead = "The Schematic ";
-		String tail = "Index";
-
-		if (titleRoom >= this.font.width(Theme.bold(lead + tail)) * 2) {
-			Theme.textScaled(ctx, this.font, Theme.bold(lead), titleX, 7, 2.0F, Theme.TEXT);
-			Theme.textScaled(ctx, this.font, Theme.bold(tail),
-					titleX + this.font.width(Theme.bold(lead)) * 2, 7, 2.0F, Theme.ACCENT_BRIGHT);
-		} else if (titleRoom >= this.font.width(lead + tail)) {
-			Theme.text(ctx, this.font, Theme.bold(lead), titleX, 12, Theme.TEXT);
-			Theme.text(ctx, this.font, Theme.bold(tail), titleX + this.font.width(Theme.bold(lead)), 12, Theme.ACCENT_BRIGHT);
+		if (titleRoom >= this.font.width(Theme.bold(TITLE_TEXT)) * 2) {
+			this.drawGradientTitle(ctx, TITLE_TEXT, 0, titleX, 7, 2.0F);
+		} else if (titleRoom >= this.font.width(TITLE_TEXT)) {
+			this.drawGradientTitle(ctx, TITLE_TEXT, 0, titleX, 12, 1.0F);
 		} else if (titleRoom > 0) {
-			Theme.text(ctx, this.font, Theme.bold(tail), titleX, 12, Theme.ACCENT_BRIGHT);
+			this.drawGradientTitle(ctx, "Index", 14, titleX, 12, 1.0F);
 		}
 
 		if (this.gridPage()) {
@@ -868,8 +885,69 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.closeButton, "Close", mouseX, mouseY, false);
 	}
 
+	private static final String TITLE_TEXT = "The Schematic Index";
+	private static final int[] TITLE_COLORS = {
+			0xFFA1A1A1, 0xFFB2B2B2, 0xFFC3C3C3, 0,
+			0xFFD4D4D4, 0xFFE5E5E5, 0xFFF6F6F6, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0,
+			0xFF1B503B, 0xFF23664B, 0xFF2A7B5B, 0xFF34976F, 0xFF3DB283,
+	};
+
+	private void drawGradientTitle(GuiGraphics ctx, String text, int startIndex, int x, int y, float scale) {
+		ctx.pose().pushMatrix();
+		ctx.pose().translate((float) x, (float) y);
+		ctx.pose().scale(scale, scale);
+
+		int cx = 0;
+
+		for (int i = 0; i < text.length(); i++) {
+			char c = text.charAt(i);
+			String glyph = "§l" + c;
+
+			if (c != ' ') {
+				ctx.drawString(this.font, glyph, cx, 0, TITLE_COLORS[startIndex + i], false);
+			}
+
+			cx += this.font.width(glyph);
+		}
+
+		ctx.pose().popMatrix();
+	}
+
 	private boolean gridPage() {
 		return this.page == Page.BROWSE || this.page == Page.SAVED;
+	}
+
+	private boolean partnerReserve() {
+		return this.gridPage() && !RemoteContent.partners().isEmpty();
+	}
+
+	private void layoutContent() {
+		int rightRail = this.partnerReserve() ? PARTNER_RAIL_WIDTH : 0;
+		int available = this.width - RAIL_WIDTH - rightRail - OUTER_MARGIN * 2;
+		this.contentWidth = Math.min(available, CONTENT_MAX_WIDTH);
+		this.contentX = RAIL_WIDTH + OUTER_MARGIN + (available - this.contentWidth) / 2;
+
+		this.columns = Math.max(2, Math.min(7, columnsFor(this.contentWidth) + Settings.gridDensity()));
+		this.cardWidth = (this.contentWidth - GUTTER * (this.columns - 1)) / this.columns;
+		this.cardHeight = imageHeight(this.cardWidth) + CAPTION_HEIGHT;
+	}
+
+	private void relayout() {
+		this.layoutContent();
+
+		int searchW = this.searchWidth();
+		int searchX = this.contentX + (this.contentWidth - searchW) / 2;
+		int searchY = (TOP_BAR_HEIGHT - 16) / 2;
+
+		if (this.searchBox != null) {
+			this.searchBox.setX(searchX + 6);
+			this.searchBox.setWidth(searchW - 12);
+		}
+
+		this.closeButton.set(this.contentX + this.contentWidth - 38, searchY, 38, 16);
+		this.layoutChips();
+		this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
+		this.refilter();
 	}
 
 	private void renderRail(GuiGraphics ctx, int mouseX, int mouseY) {
@@ -909,6 +987,106 @@ public class IndexScreen extends Screen {
 				Theme.roundedRect(ctx, RAIL_WIDTH + 2, rect.y + 8, width, 12, Theme.RADIUS_PILL, Theme.SURFACE_ELEVATED);
 				Theme.text(ctx, this.font, label, RAIL_WIDTH + 6, rect.y + 10, Theme.TEXT);
 			}
+		}
+
+		this.renderRailLinks(ctx, mouseX, mouseY);
+	}
+
+	private void renderRailLinks(GuiGraphics ctx, int mouseX, int mouseY) {
+		List<RemoteContent.Link> links = RemoteContent.links();
+		this.railLinkRects.clear();
+
+		if (links.isEmpty()) {
+			return;
+		}
+
+		int item = 26;
+		int size = 18;
+		int y = this.height - 8 - links.size() * item;
+
+		for (RemoteContent.Link link : links) {
+			Rect rect = new Rect();
+			rect.set(0, y, RAIL_WIDTH, item);
+			this.railLinkRects.add(rect);
+
+			boolean hovered = rect.contains(mouseX, mouseY);
+
+			if (hovered) {
+				ctx.fill(rect.x, rect.y, rect.x + rect.width - 1, rect.y + rect.height, Theme.SURFACE_ELEVATED);
+			}
+
+			int iconX = rect.x + (RAIL_WIDTH - size) / 2;
+			int iconY = rect.y + (item - size) / 2;
+			Identifier icon = ImageStore.avatar(link.iconUrl());
+
+			if (icon != null) {
+				Theme.image(ctx, icon, iconX, iconY, size, size, 64, 64);
+			} else {
+				Theme.roundedRect(ctx, iconX, iconY, size, size, 4, Theme.RAIL_TILE);
+			}
+
+			if (hovered && !link.label().isBlank()) {
+				int width = this.font.width(link.label()) + 8;
+				Theme.roundedRect(ctx, RAIL_WIDTH + 2, rect.y + (item - 12) / 2, width, 12, Theme.RADIUS_PILL, Theme.SURFACE_ELEVATED);
+				Theme.text(ctx, this.font, link.label(), RAIL_WIDTH + 6, rect.y + (item - 12) / 2 + 2, Theme.TEXT);
+			}
+
+			y += item;
+		}
+	}
+
+	private void renderPartnerRail(GuiGraphics ctx, int mouseX, int mouseY) {
+		List<RemoteContent.Partner> partners = RemoteContent.partners();
+		this.partnerRects.clear();
+
+		if (partners.isEmpty()) {
+			return;
+		}
+
+		int railX = this.width - PARTNER_RAIL_WIDTH;
+		ctx.fill(railX, TOP_BAR_HEIGHT, this.width, this.height, Theme.SURFACE);
+		ctx.fill(railX, TOP_BAR_HEIGHT, railX + 1, this.height, Theme.HAIRLINE);
+
+		int centreX = railX + PARTNER_RAIL_WIDTH / 2;
+		String header = Theme.bold("Partners");
+		Theme.text(ctx, this.font, header, centreX - this.font.width(header) / 2, TOP_BAR_HEIGHT + 8, Theme.TEXT_MUTE);
+
+		int icon = 30;
+		int y = TOP_BAR_HEIGHT + 24;
+
+		for (RemoteContent.Partner partner : partners) {
+			int entryHeight = icon + 3 + this.font.lineHeight + 12;
+
+			if (y > this.height) {
+				break;
+			}
+
+			Rect rect = new Rect();
+			rect.set(railX, y, PARTNER_RAIL_WIDTH, entryHeight);
+			this.partnerRects.add(rect);
+
+			boolean hovered = rect.contains(mouseX, mouseY);
+			int iconX = centreX - icon / 2;
+
+			if (hovered) {
+				Theme.roundedRect(ctx, railX + 6, y - 3, PARTNER_RAIL_WIDTH - 12, entryHeight - 3, Theme.RADIUS_CARD, Theme.SURFACE_ELEVATED);
+			}
+
+			Identifier texture = ImageStore.avatar(partner.iconUrl());
+
+			if (texture != null) {
+				Theme.image(ctx, texture, iconX, y, icon, icon, 64, 64);
+			} else {
+				Theme.roundedRect(ctx, iconX, y, icon, icon, 6, Theme.RAIL_TILE);
+			}
+
+			if (!partner.name().isBlank()) {
+				String name = Theme.clip(this.font, partner.name(), PARTNER_RAIL_WIDTH - 10);
+				Theme.text(ctx, this.font, name, centreX - this.font.width(name) / 2, y + icon + 4,
+						hovered ? Theme.TEXT : Theme.TEXT_MUTE);
+			}
+
+			y += entryHeight;
 		}
 	}
 
@@ -1994,12 +2172,18 @@ public class IndexScreen extends Screen {
 	}
 
 	private void renderSettings(GuiGraphics ctx, int mouseX, int mouseY) {
-		int formWidth = Math.min(this.contentWidth, 360);
-		int formX = this.contentX + (this.contentWidth - formWidth) / 2;
-		int y = TOP_BAR_HEIGHT + 16;
+		int top = TOP_BAR_HEIGHT + 12;
+		int bottom = this.height - OUTER_MARGIN;
+		int formWidth = Math.min(this.contentWidth - 48, 420);
+		int formX = this.contentX + 24;
+
+		ctx.enableScissor(this.contentX, top, this.contentX + this.contentWidth, bottom);
+
+		int startY = top - Math.round(this.scroll);
+		int y = startY;
 
 		Theme.textScaled(ctx, this.font, Theme.bold("Settings"), formX, y, 1.5F, Theme.TEXT);
-		y += 24;
+		y += 36;
 
 		y = this.settingRow(ctx, this.soundsToggle, "Sound effects",
 				"Toggle on/off sound effects like button clicks when opening menus.",
@@ -2015,41 +2199,38 @@ public class IndexScreen extends Screen {
 				"Get a toast when a creator you follow posts a new schematic.",
 				Settings.notifications(), formX, y, formWidth, mouseX, mouseY);
 
-		y += 6;
-		Theme.text(ctx, this.font, Theme.bold("Grid density"), formX, y, Theme.TEXT);
-		y += this.font.lineHeight + 3;
+		y = this.settingsSectionHeader(ctx, "Grid density", formX, y);
 
 		for (String row : this.wrap("Changing the grid density decides how many posts can fit on one row, "
 				+ "compact provides more posts but smaller thumbnails, while large gives you a great view of "
 				+ "the thumbnails.", formWidth, 5)) {
 			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
-			y += this.font.lineHeight + 1;
+			y += this.font.lineHeight + 2;
 		}
 
-		y += 4;
+		y += 8;
 		int densityWidth = this.font.width(Theme.bold("Grid: Comfortable")) + 16;
 		this.gridDensityButton.set(formX, y, densityWidth, FIELD_HEIGHT);
 		this.pillButton(ctx, this.gridDensityButton, "Grid: " + Settings.gridDensityLabel(), mouseX, mouseY, false);
 
-		y += FIELD_HEIGHT + 12;
-		Theme.text(ctx, this.font, Theme.bold("Download folder"), formX, y, Theme.TEXT);
-		y += this.font.lineHeight + 3;
+		y += FIELD_HEIGHT;
+		y = this.settingsSectionHeader(ctx, "Download folder", formX, y);
 
 		for (String row : this.wrap("The Download folder is meant to be your Schematic folder where you can "
 				+ "easily store or access your schematics in Litematica. It is automatically assigned to this "
 				+ "client's schematic folder, but you can change it if you prefer to download to a different "
 				+ "location.", formWidth, 6)) {
 			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
-			y += this.font.lineHeight + 1;
+			y += this.font.lineHeight + 2;
 		}
 
-		y += 4;
+		y += 6;
 		for (String row : this.wrap(Settings.downloadDirectory().toString(), formWidth, 2)) {
 			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_MUTE);
-			y += this.font.lineHeight + 1;
+			y += this.font.lineHeight + 2;
 		}
 
-		y += 4;
+		y += 8;
 		int changeWidth = this.font.width(Theme.bold("Change")) + 16;
 		int openWidth = this.font.width(Theme.bold("Open folder")) + 16;
 		this.changeFolderButton.set(formX, y, changeWidth, FIELD_HEIGHT);
@@ -2065,49 +2246,273 @@ public class IndexScreen extends Screen {
 			this.resetFolderButton.set(0, 0, 0, 0);
 		}
 
-		y += FIELD_HEIGHT + 12;
-		Theme.text(ctx, this.font, Theme.bold("Cache"), formX, y, Theme.TEXT);
-		y += this.font.lineHeight + 3;
+		y += FIELD_HEIGHT;
+		y = this.settingsSectionHeader(ctx, "Cache", formX, y);
 
 		for (String row : this.wrap("Clearing the cache frees the memory used by loaded thumbnails and 3D "
 				+ "previews; they reload when next shown.", formWidth, 4)) {
 			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
-			y += this.font.lineHeight + 1;
+			y += this.font.lineHeight + 2;
 		}
 
-		y += 4;
+		y += 8;
 		int clearWidth = this.font.width(Theme.bold("Clear cache")) + 16;
 		this.clearCacheButton.set(formX, y, clearWidth, FIELD_HEIGHT);
 		this.pillButton(ctx, this.clearCacheButton, "Clear cache", mouseX, mouseY, false);
 
-		y += FIELD_HEIGHT + 12;
-		Theme.text(ctx, this.font, Theme.bold("Terms of service"), formX, y, Theme.TEXT);
-		y += this.font.lineHeight + 3;
+		y += FIELD_HEIGHT;
+		y = this.settingsSectionHeader(ctx, "Terms of service", formX, y);
 
 		for (String row : this.wrap("Review the terms you agreed to, or withdraw your agreement - which "
 				+ "disables the online features.", formWidth, 3)) {
 			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
-			y += this.font.lineHeight + 1;
+			y += this.font.lineHeight + 2;
 		}
 
-		y += 4;
+		y += 8;
 		int termsWidth = this.font.width(Theme.bold("Review terms")) + 16;
 		this.termsButton.set(formX, y, termsWidth, FIELD_HEIGHT);
 		this.pillButton(ctx, this.termsButton, "Review terms", mouseX, mouseY, false);
+		y += FIELD_HEIGHT + 8;
+
+		ctx.disableScissor();
+
+		int contentHeight = y - startY;
+		this.maxScroll = Math.max(0.0F, contentHeight - (bottom - top));
+		this.scroll = Math.min(this.scroll, this.maxScroll);
+
+		if (this.maxScroll > 0.0F) {
+			int trackHeight = bottom - top;
+			int barHeight = Math.max(16, Math.round(trackHeight * (trackHeight / (float) (trackHeight + this.maxScroll))));
+			int barY = top + Math.round((trackHeight - barHeight) * (this.scroll / this.maxScroll));
+			int barX = Math.min(this.contentX + this.contentWidth + 2, this.width - 4);
+			Theme.roundedRect(ctx, barX, barY, 3, barHeight, 1, Theme.HAIRLINE);
+		}
+
+		int rightX = formX + formWidth + 24;
+		int rightWidth = this.contentX + this.contentWidth - rightX;
+
+		if (rightWidth >= 170) {
+			this.renderCreditsPanel(ctx, rightX, top, rightWidth, bottom);
+		}
+	}
+
+	private void renderCreditsPanel(GuiGraphics ctx, int x, int top, int width, int bottom) {
+		ctx.enableScissor(x, top, x + width, bottom);
+
+		int y = top;
+		Theme.text(ctx, this.font, Theme.bold("Credits"), x, y, Theme.TEXT);
+		y += this.font.lineHeight + 8;
+
+		List<RemoteContent.Credit> credits = RemoteContent.credits();
+
+		if (credits.isEmpty()) {
+			String message = RemoteContent.loaded() ? "No credits yet." : "Loading credits.";
+			Theme.text(ctx, this.font, message, x, y, Theme.TEXT_MUTE);
+			ctx.disableScissor();
+			return;
+		}
+
+		int head = 24;
+
+		for (RemoteContent.Credit credit : credits) {
+			if (y > bottom) {
+				break;
+			}
+
+			Identifier avatar = ImageStore.avatar(credit.avatarUrl());
+
+			if (avatar != null) {
+				Theme.image(ctx, avatar, x, y, head, head, 64, 64);
+			} else {
+				Theme.roundedRect(ctx, x, y, head, head, 4, Theme.SURFACE_ELEVATED);
+			}
+
+			int textX = x + head + 8;
+			int textWidth = x + width - textX;
+			Theme.text(ctx, this.font, Theme.bold(Theme.clipBold(this.font, credit.displayName(), textWidth)),
+					textX, y + 2, Theme.TEXT);
+
+			if (!credit.role().isBlank()) {
+				Theme.text(ctx, this.font, Theme.clip(this.font, credit.role(), textWidth),
+						textX, y + 2 + this.font.lineHeight + 2, Theme.ACCENT_BRIGHT);
+			}
+
+			int lineY = y + head + 4;
+
+			for (String row : this.wrap(credit.description(), width, 4)) {
+				Theme.text(ctx, this.font, row, x, lineY, Theme.TEXT_ASH);
+				lineY += this.font.lineHeight + 2;
+			}
+
+			y = lineY + 12;
+		}
+
+		ctx.disableScissor();
+	}
+
+	private int settingsSectionHeader(GuiGraphics ctx, String label, int x, int y) {
+		y += 20;
+		Theme.text(ctx, this.font, Theme.bold(label), x, y, Theme.TEXT);
+		return y + this.font.lineHeight + 7;
+	}
+
+	private void updateBanner() {
+		RemoteContent.Announcement announcement = RemoteContent.announcement();
+		String activeId = announcement != null && !announcement.id().isBlank()
+				&& !announcement.id().equals(Settings.dismissedAnnouncement()) ? announcement.id() : null;
+
+		if (activeId != null && !activeId.equals(this.bannerId)) {
+			this.bannerId = activeId;
+			this.bannerAnnouncement = announcement;
+			this.bannerEntering = true;
+			this.bannerActive = true;
+			this.bannerAnimStart = System.currentTimeMillis();
+		} else if (this.bannerActive && this.bannerEntering && activeId == null && this.bannerId != null) {
+			this.bannerEntering = false;
+			this.bannerAnimStart = System.currentTimeMillis();
+		}
+	}
+
+	private void dismissBanner() {
+		if (this.bannerId != null) {
+			Settings.dismissAnnouncement(this.bannerId);
+		}
+
+		this.bannerEntering = false;
+		this.bannerAnimStart = System.currentTimeMillis();
+	}
+
+	private void renderBanner(GuiGraphics ctx, int mouseX, int mouseY) {
+		if (!this.bannerActive || this.bannerAnnouncement == null) {
+			return;
+		}
+
+		long elapsed = System.currentTimeMillis() - this.bannerAnimStart;
+		float t = Math.max(0.0F, Math.min(1.0F, elapsed / 420.0F));
+		float progress;
+
+		if (this.bannerEntering) {
+			progress = easeOutBack(t);
+		} else {
+			if (t >= 1.0F) {
+				this.bannerActive = false;
+				return;
+			}
+
+			progress = 1.0F - easeInBack(t);
+		}
+
+		RemoteContent.Announcement announcement = this.bannerAnnouncement;
+		int pad = 12;
+		int cardWidth = Math.min(this.contentWidth - 16, 430);
+		int cardX = this.contentX + (this.contentWidth - cardWidth) / 2;
+
+		List<String> desc = this.wrap(announcement.description(), cardWidth - pad * 2 - 4, 3);
+		int titleRow = this.font.lineHeight + 2;
+		int cardHeight = pad + titleRow + 6 + Math.max(1, desc.size()) * (this.font.lineHeight + 2) + pad;
+
+		int restY = TOP_BAR_HEIGHT + 8;
+		int hiddenY = -cardHeight - 6;
+		int cardY = Math.round(hiddenY + (restY - hiddenY) * progress);
+
+		int accent = parseColor(announcement.color(), Theme.ACCENT);
+
+		Theme.roundedRect(ctx, cardX, cardY, cardWidth, cardHeight, Theme.RADIUS_CARD, Theme.SURFACE_ELEVATED);
+		Theme.roundedOutline(ctx, cardX, cardY, cardWidth, cardHeight, Theme.RADIUS_CARD, Theme.HAIRLINE);
+		ctx.fill(cardX + 1, cardY + 1, cardX + 5, cardY + cardHeight - 1, accent);
+
+		int tx = cardX + pad + 4;
+		int ty = cardY + pad;
+
+		Theme.text(ctx, this.font, Theme.bold(Theme.clipBold(this.font, announcement.title(), cardWidth - pad * 2 - 70)),
+				tx, ty, Theme.TEXT);
+
+		if (!announcement.tag().isBlank()) {
+			int tagX = tx + this.font.width(Theme.bold(announcement.title())) + 8;
+			int tagWidth = this.font.width(announcement.tag()) + 12;
+
+			if (tagX + tagWidth < cardX + cardWidth - 24) {
+				Theme.roundedRect(ctx, tagX, ty - 2, tagWidth, this.font.lineHeight + 4, Theme.RADIUS_PILL, accent);
+				Theme.text(ctx, this.font, announcement.tag(), tagX + 6, ty, Theme.ON_ACCENT);
+			}
+		}
+
+		int closeSize = 14;
+		int closeX = cardX + cardWidth - pad - closeSize + 4;
+		int closeY = cardY + pad - 3;
+		this.bannerClose.set(closeX, closeY, closeSize, closeSize);
+		boolean hover = this.bannerClose.contains(mouseX, mouseY);
+		int closeColor = hover ? Theme.TEXT : Theme.TEXT_MUTE;
+		this.drawLine(ctx, closeX + 3, closeY + 3, closeX + closeSize - 3, closeY + closeSize - 3, closeColor);
+		this.drawLine(ctx, closeX + 3, closeY + closeSize - 3, closeX + closeSize - 3, closeY + 3, closeColor);
+
+		int lineY = cardY + pad + titleRow + 6;
+
+		for (String row : desc) {
+			Theme.text(ctx, this.font, row, tx, lineY, Theme.TEXT_ASH);
+			lineY += this.font.lineHeight + 2;
+		}
+	}
+
+	private static float easeOutBack(float t) {
+		float c1 = 1.70158F;
+		float c3 = c1 + 1.0F;
+		float p = t - 1.0F;
+		return 1.0F + c3 * p * p * p + c1 * p * p;
+	}
+
+	private static float easeInBack(float t) {
+		float c1 = 1.70158F;
+		float c3 = c1 + 1.0F;
+		return c3 * t * t * t - c1 * t * t;
+	}
+
+	private static int parseColor(String hex, int fallback) {
+		if (hex == null) {
+			return fallback;
+		}
+
+		String value = hex.trim();
+
+		if (value.startsWith("#")) {
+			value = value.substring(1);
+		}
+
+		if (value.length() != 6) {
+			return fallback;
+		}
+
+		try {
+			return 0xFF000000 | Integer.parseInt(value, 16);
+		} catch (NumberFormatException e) {
+			return fallback;
+		}
+	}
+
+	private String effectiveTermsBody() {
+		RemoteContent.Terms terms = RemoteContent.terms();
+
+		if (terms != null && !terms.body().isBlank()) {
+			return terms.body();
+		}
+
+		String cached = Settings.cachedTermsBody();
+		return cached != null ? cached : TERMS_BODY;
 	}
 
 	private int settingRow(GuiGraphics ctx, Rect rect, String label, String hint, boolean on,
 			int x, int y, int width, int mouseX, int mouseY) {
 		rect.set(x, y, width, FIELD_HEIGHT);
 		this.toggle(ctx, rect, label, on, mouseX, mouseY);
-		y += FIELD_HEIGHT + 3;
+		y += FIELD_HEIGHT + 7;
 
 		for (String row : this.wrap(hint, width, 2)) {
 			Theme.text(ctx, this.font, row, x, y, Theme.TEXT_ASH);
-			y += this.font.lineHeight + 1;
+			y += this.font.lineHeight + 2;
 		}
 
-		return y + 8;
+		return y + 24;
 	}
 
 	private void renderNews(GuiGraphics ctx) {
@@ -2746,6 +3151,13 @@ public class IndexScreen extends Screen {
 
 		this.registerButtonPress(mouseX, mouseY);
 
+		if (this.bannerActive && this.bannerEntering && this.detail == null && !this.tosOpen
+				&& !this.tutorialActive && !this.designerWarnOpen && this.bannerClose.contains(mouseX, mouseY)) {
+			this.dismissBanner();
+			Theme.click(0.9F);
+			return true;
+		}
+
 		if (this.tosOpen) {
 			this.clickTos(mouseX, mouseY);
 			return true;
@@ -2807,6 +3219,26 @@ public class IndexScreen extends Screen {
 				Theme.buttonPop(this.railRects.get(i));
 				this.switchPage(Page.values()[i]);
 				return true;
+			}
+		}
+
+		List<RemoteContent.Link> railLinks = RemoteContent.links();
+
+		for (int i = 0; i < this.railLinkRects.size() && i < railLinks.size(); i++) {
+			if (this.railLinkRects.get(i).contains(mouseX, mouseY)) {
+				this.openLink(railLinks.get(i).url());
+				return true;
+			}
+		}
+
+		if (this.gridPage()) {
+			List<RemoteContent.Partner> partners = RemoteContent.partners();
+
+			for (int i = 0; i < this.partnerRects.size() && i < partners.size(); i++) {
+				if (this.partnerRects.get(i).contains(mouseX, mouseY)) {
+					this.openLink(partners.get(i).url());
+					return true;
+				}
 			}
 		}
 
@@ -2902,9 +3334,7 @@ public class IndexScreen extends Screen {
 		this.scroll = 0.0F;
 		this.formStatus = "";
 		this.setFocused(null);
-		this.layoutChips();
-		this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
-		this.refilter();
+		this.relayout();
 	}
 
 	private boolean clickUpload(MouseButtonEvent event, boolean doubleClick, double mouseX, double mouseY) {
@@ -3072,6 +3502,15 @@ public class IndexScreen extends Screen {
 		}
 
 		return true;
+	}
+
+	private void openLink(String url) {
+		if (url == null || url.isBlank()) {
+			return;
+		}
+
+		Theme.click(1.0F);
+		net.minecraft.client.gui.screens.ConfirmLinkScreen.confirmLinkNow(this, url, true);
 	}
 
 	private void openDownloadPicker() {
@@ -3648,10 +4087,6 @@ public class IndexScreen extends Screen {
 				this.dashScroll = Math.max(0.0F, Math.min(this.dashMaxScroll, this.dashScroll - (float) scrollY * SCROLL_STEP));
 			}
 
-			return true;
-		}
-
-		if (this.page == Page.SETTINGS) {
 			return true;
 		}
 
