@@ -15,6 +15,7 @@ public final class Catalogue {
 	}
 
 	public enum Sort {
+		TRENDING("Trending"),
 		NEWEST("Newest"),
 		DOWNLOADS("Most downloaded"),
 		LIKES("Most liked");

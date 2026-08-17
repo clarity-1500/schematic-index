@@ -4,6 +4,7 @@ import com.fudgedy.schematicindex.Settings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.ItemStack;
 import org.jetbrains.annotations.Nullable;
 
@@ -23,18 +24,27 @@ public final class Toasts {
 
 	private static final List<Toast> ACTIVE = new CopyOnWriteArrayList<>();
 
-	private record Toast(String title, String message, long spawnedAt, @Nullable ItemStack icon) {
+	private record Toast(String title, String message, long spawnedAt, @Nullable ItemStack icon,
+			@Nullable String avatarUrl) {
 	}
 
 	private Toasts() {
 	}
 
 	public static void push(String title, String message, @Nullable ItemStack icon) {
+		add(new Toast(title, message, System.currentTimeMillis(), icon, null));
+	}
+
+	public static void pushAvatar(String title, String message, String avatarUrl) {
+		add(new Toast(title, message, System.currentTimeMillis(), null, avatarUrl));
+	}
+
+	private static void add(Toast toast) {
 		if (!Settings.toasts()) {
 			return;
 		}
 
-		ACTIVE.add(new Toast(title, message, System.currentTimeMillis(), icon));
+		ACTIVE.add(toast);
 
 		while (ACTIVE.size() > 16) {
 			ACTIVE.remove(0);
@@ -68,7 +78,7 @@ public final class Toasts {
 				break;
 			}
 
-			int textLeft = toast.icon() != null ? 32 : 14;
+			int textLeft = toast.icon() != null || toast.avatarUrl() != null ? 30 : 14;
 			List<String> lines = wrap(font, toast.message(), WIDTH - textLeft - 10, 2);
 			int cardHeight = 11 + font.lineHeight + 4 + Math.max(1, lines.size()) * (font.lineHeight + 1) + 9;
 
@@ -87,7 +97,18 @@ public final class Toasts {
 
 		ctx.fill(x + 1, y + 1, x + 1 + BAR, y + height - 1, Theme.ACCENT);
 
-		if (toast.icon() != null) {
+		if (toast.avatarUrl() != null) {
+			int size = 18;
+			int ax = x + BAR + 6;
+			int ay = y + (height - size) / 2;
+			Identifier avatar = ImageStore.avatar(toast.avatarUrl());
+
+			if (avatar != null) {
+				Theme.image(ctx, avatar, ax, ay, size, size, 64, 64);
+			} else {
+				Theme.roundedRect(ctx, ax, ay, size, size, 4, Theme.SURFACE_ELEVATED);
+			}
+		} else if (toast.icon() != null) {
 			ctx.renderItem(toast.icon(), x + BAR + 6, y + (height - 16) / 2);
 		}
 

@@ -106,6 +106,27 @@ public final class Backend {
 		fireAndForget("/unfollow", one("poster", poster));
 	}
 
+	// Synchronous variants that return the HTTP status so the caller can revert the
+	// optimistic UI and surface an error when the follow could not be saved (e.g. offline).
+	public static int followStatus(String postId, String poster) {
+		if (!configured()) {
+			return 0;
+		}
+
+		JsonObject body = new JsonObject();
+		body.addProperty("postId", postId == null ? "" : postId);
+		body.addProperty("poster", poster);
+		return postJson("/follow", body.toString());
+	}
+
+	public static int unfollowStatus(String poster) {
+		if (!configured()) {
+			return 0;
+		}
+
+		return postJson("/unfollow", one("poster", poster));
+	}
+
 	public static void reportAsync(String postId, String reason, String note) {
 		JsonObject body = new JsonObject();
 		body.addProperty("postId", postId);
@@ -136,6 +157,7 @@ public final class Backend {
 			Path temporary = target.resolveSibling(target.getFileName() + ".part");
 			HttpRequest request = HttpRequest.newBuilder(URI.create(url))
 					.timeout(Duration.ofSeconds(60))
+					.header("User-Agent", "SchematicIndex")
 					.GET()
 					.build();
 			HttpResponse<Path> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofFile(temporary));
@@ -326,7 +348,7 @@ public final class Backend {
 				intOf(o, "blockCount"), intOf(o, "downloads"), intOf(o, "likes"), longOf(o, "postedAt"),
 				str(o, "description"), imageUrls.size(), 0, slot, false,
 				str(o, "thumbnailUrl"), imageUrls, fileUrl, str(o, "fileHash"), longOf(o, "fileSize"),
-				boolOf(o, "liked"));
+				boolOf(o, "liked"), doubleOf(o, "trendScore"));
 	}
 
 	public static NewsFeed.Entry parseNews(JsonObject o) {
@@ -351,6 +373,10 @@ public final class Backend {
 
 	private static long longOf(JsonObject o, String key) {
 		return o.has(key) && !o.get(key).isJsonNull() ? o.get(key).getAsLong() : 0L;
+	}
+
+	private static double doubleOf(JsonObject o, String key) {
+		return o.has(key) && !o.get(key).isJsonNull() ? o.get(key).getAsDouble() : 0.0;
 	}
 
 	private static boolean boolOf(JsonObject o, String key) {

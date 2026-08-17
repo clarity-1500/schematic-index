@@ -35,6 +35,7 @@ public final class RemoteContent {
 	private static volatile @Nullable Terms terms;
 	private static volatile List<Link> links = List.of();
 	private static volatile List<Partner> partners = List.of();
+	private static volatile String discord = "";
 	private static volatile boolean loaded;
 
 	private static final java.util.concurrent.atomic.AtomicBoolean polling = new java.util.concurrent.atomic.AtomicBoolean();
@@ -60,6 +61,10 @@ public final class RemoteContent {
 
 	public static List<Partner> partners() {
 		return partners;
+	}
+
+	public static String discord() {
+		return discord;
 	}
 
 	public static boolean loaded() {
@@ -151,6 +156,7 @@ public final class RemoteContent {
 				partners = partnerList;
 			}
 
+			discord = s(body, "discord");
 			loaded = true;
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.debug("Content parse failed", e);

@@ -1,11 +1,14 @@
 package com.fudgedy.schematicindex.gui;
 
 import com.fudgedy.schematicindex.SchematicIndexMod;
+import com.fudgedy.schematicindex.Errors;
+import com.fudgedy.schematicindex.LoadedCache;
 import com.fudgedy.schematicindex.Settings;
 import com.fudgedy.schematicindex.catalogue.Backend;
 import com.fudgedy.schematicindex.catalogue.Bookmarks;
 import com.fudgedy.schematicindex.catalogue.Catalogue;
 import com.fudgedy.schematicindex.catalogue.Category;
+import com.fudgedy.schematicindex.catalogue.CollectionStore;
 import com.fudgedy.schematicindex.catalogue.Download;
 import com.fudgedy.schematicindex.catalogue.Follows;
 import com.fudgedy.schematicindex.catalogue.NewsFeed;
@@ -20,14 +23,20 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
+import fi.dy.masa.litematica.data.DataManager;
+import fi.dy.masa.litematica.data.SchematicHolder;
 import fi.dy.masa.litematica.schematic.LitematicaSchematic;
+import fi.dy.masa.litematica.schematic.placement.SchematicPlacement;
 import fi.dy.masa.litematica.util.FileType;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 import net.minecraft.util.Util;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.ResolvableProfile;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -98,7 +107,14 @@ public class IndexScreen extends Screen {
 
 	private Page page = Page.BROWSE;
 	private Category category = Category.ALL;
-	private Catalogue.Sort sort = Catalogue.Sort.NEWEST;
+
+	// Remembered across menu close/reopen within a session (static, so a Minecraft
+	// restart resets them). Lets reopening the menu land back on the same view.
+	private static Catalogue.Sort sessionSort = Catalogue.Sort.TRENDING;
+	private static Category sessionCategory = Category.ALL;
+	private static float sessionScroll;
+	private static int sessionShown = PAGE_SIZE;
+	private Catalogue.Sort sort = Catalogue.Sort.TRENDING;
 	private String query = "";
 	private long catalogueRevision = -1;
 
@@ -115,6 +131,7 @@ public class IndexScreen extends Screen {
 	private float maxScroll;
 	
 	private int shownCount = PAGE_SIZE;
+	private int focusedCard = -1;
 
 	private EditBox searchBox;
 	private EditBox codeBox;
@@ -135,6 +152,7 @@ public class IndexScreen extends Screen {
 	private final Rect formCategoryButton = new Rect();
 	private final Rect formImagePrev = new Rect();
 	private final Rect formImageNext = new Rect();
+	private final Rect formImageRemove = new Rect();
 	private final Rect uploadPicturesButton = new Rect();
 	private final Rect uploadSchematicButton = new Rect();
 	private @Nullable Path formSchematic;
@@ -202,6 +220,7 @@ public class IndexScreen extends Screen {
 	private final Rect detailPrev = new Rect();
 	private final Rect detailNext = new Rect();
 	private final Rect detailDownload = new Rect();
+	private final Rect detailLoad = new Rect();
 	private final Rect detailPreview3d = new Rect();
 	private final Rect detailSave = new Rect();
 	private final Rect detailFollow = new Rect();
@@ -257,6 +276,39 @@ public class IndexScreen extends Screen {
 	private final List<Rect> railLinkRects = new ArrayList<>();
 	private final List<Rect> partnerRects = new ArrayList<>();
 
+	private boolean errorOpen;
+	private String errorCode = "";
+	private final Rect errorClose = new Rect();
+	private final Rect errorReport = new Rect();
+
+	// Collections (local, user-made groups of posts shown in the Saved tab).
+	private @Nullable String activeCollection;
+	private @Nullable String addingToCollection;
+	private final List<Rect> collectionChips = new ArrayList<>();
+	private final Rect newCollectionChip = new Rect();
+	private final Rect addPostsChip = new Rect();
+	private final Rect addModeDone = new Rect();
+	private final Rect detailCollection = new Rect();
+	private boolean collectionMenuOpen;
+	private final List<Rect> collectionMenuRects = new ArrayList<>();
+	private final Rect collectionMenuNew = new Rect();
+	private boolean nameInputOpen;
+	private String nameInput = "";
+	private final Rect nameConfirm = new Rect();
+	private final Rect nameCancel = new Rect();
+	private @Nullable String namePendingPost;
+
+	// Creator profile: a grid filtered to one poster, with an Instagram-style header.
+	private @Nullable String profilePoster;
+	private @Nullable String profileIgn;
+	private int profileFollowers = -1;
+	private int profilePosts = -1;
+	private int profileDownloads = -1;
+	private final Rect profileBack = new Rect();
+	private final Rect profileFollow = new Rect();
+	private final Rect detailPosterRect = new Rect();
+	private final Rect detailViewProfile = new Rect();
+
 	private static final String[][] TUTORIAL = {
 			{"Welcome to The Schematic Index",
 					"Browse the latest community schematics via posts and download them directly into your "
@@ -308,6 +360,9 @@ public class IndexScreen extends Screen {
 		SchematicPreview.discover();
 		Catalogue.ensureLoaded();
 
+		this.sort = sessionSort;
+		this.category = sessionCategory;
+
 		this.layoutContent();
 
 		int searchWidth = this.searchWidth();
@@ -353,6 +408,10 @@ public class IndexScreen extends Screen {
 		this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
 		this.gridBottom = this.height - OUTER_MARGIN;
 		this.refilter();
+
+		this.shownCount = Math.max(PAGE_SIZE, Math.min(sessionShown, this.visible.size()));
+		this.recomputeScrollBounds();
+		this.scroll = Math.min(sessionScroll, this.maxScroll);
 	}
 
 	private void maybeStartTutorial() {
@@ -420,8 +479,19 @@ public class IndexScreen extends Screen {
 		this.chipRects.clear();
 		this.chipOrder.clear();
 
+		if (this.profilePoster != null) {
+			this.chipRowHeight = 128;
+			this.sortButton.set(0, 0, 0, 0);
+			return;
+		}
+
 		if (this.page != Page.BROWSE && this.page != Page.SAVED) {
 			this.chipRowHeight = 26;
+			return;
+		}
+
+		if (this.page == Page.SAVED) {
+			this.layoutCollectionChips();
 			return;
 		}
 
@@ -453,16 +523,78 @@ public class IndexScreen extends Screen {
 		this.sortButton.set(this.contentX + this.contentWidth - sortWidth, TOP_BAR_HEIGHT + 6, sortWidth, CHIP_HEIGHT);
 	}
 
+	private void layoutCollectionChips() {
+		this.collectionChips.clear();
+
+		String sortLabel = "Sort: " + this.sort.label();
+		int sortWidth = this.font.width(Theme.bold(sortLabel)) + 12;
+		int firstRowLimit = this.contentX + this.contentWidth - sortWidth - 8;
+		int limit = this.contentX + this.contentWidth;
+		int x = this.contentX;
+		int[] row = {0};
+
+		List<String> labels = new ArrayList<>();
+		labels.add("All saved");
+		labels.addAll(CollectionStore.names());
+
+		for (String label : labels) {
+			int width = this.font.width(Theme.bold(label)) + 12;
+			x = this.wrapChip(x, width, firstRowLimit, limit, row);
+			Rect rect = new Rect();
+			rect.set(x, TOP_BAR_HEIGHT + 6 + row[0] * (CHIP_HEIGHT + CHIP_GAP), width, CHIP_HEIGHT);
+			this.collectionChips.add(rect);
+			x += width + CHIP_GAP;
+		}
+
+		int newWidth = this.font.width(Theme.bold("+ New")) + 12;
+		x = this.wrapChip(x, newWidth, firstRowLimit, limit, row);
+		this.newCollectionChip.set(x, TOP_BAR_HEIGHT + 6 + row[0] * (CHIP_HEIGHT + CHIP_GAP), newWidth, CHIP_HEIGHT);
+		x += newWidth + CHIP_GAP;
+
+		if (this.activeCollection != null) {
+			int addWidth = this.font.width(Theme.bold("+ Add posts")) + 12;
+			x = this.wrapChip(x, addWidth, firstRowLimit, limit, row);
+			this.addPostsChip.set(x, TOP_BAR_HEIGHT + 6 + row[0] * (CHIP_HEIGHT + CHIP_GAP), addWidth, CHIP_HEIGHT);
+			x += addWidth + CHIP_GAP;
+		} else {
+			this.addPostsChip.set(0, 0, 0, 0);
+		}
+
+		this.chipRowHeight = 6 + (row[0] + 1) * CHIP_HEIGHT + row[0] * CHIP_GAP + 6;
+		this.sortButton.set(this.contentX + this.contentWidth - sortWidth, TOP_BAR_HEIGHT + 6, sortWidth, CHIP_HEIGHT);
+	}
+
+	private int wrapChip(int x, int width, int firstRowLimit, int limit, int[] row) {
+		int rowLimit = row[0] == 0 ? firstRowLimit : limit;
+
+		if (x + width > rowLimit && x > this.contentX) {
+			row[0]++;
+			return this.contentX;
+		}
+
+		return x;
+	}
+
 	private void refilter() {
 		this.visible.clear();
 		String needle = this.query.trim().toLowerCase(Locale.ROOT);
 
 		for (SchematicEntry entry : Catalogue.posts()) {
-			if (this.page == Page.SAVED && !isSaved(entry)) {
-				continue;
+			if (this.profilePoster != null) {
+				if (!entry.poster().equals(this.profilePoster)) {
+					continue;
+				}
+			} else if (this.page == Page.SAVED) {
+				if (this.activeCollection != null) {
+					if (!CollectionStore.contains(this.activeCollection, entry.id())) {
+						continue;
+					}
+				} else if (!isSaved(entry)) {
+					continue;
+				}
 			}
 
-			if (this.category != Category.ALL && entry.category() != this.category) {
+			if (this.page != Page.SAVED && this.category != Category.ALL && entry.category() != this.category) {
 				continue;
 			}
 
@@ -477,6 +609,8 @@ public class IndexScreen extends Screen {
 		}
 
 		Comparator<SchematicEntry> comparator = switch (this.sort) {
+			case TRENDING -> Comparator.comparingDouble(SchematicEntry::trendScore).reversed()
+					.thenComparing(Comparator.comparingLong(SchematicEntry::postedAt).reversed());
 			case NEWEST -> Comparator.comparingLong(SchematicEntry::postedAt).reversed();
 			case DOWNLOADS -> Comparator.comparingInt(SchematicEntry::downloads).reversed();
 			case LIKES -> Comparator.comparingInt(IndexScreen::likesOf).reversed();
@@ -484,7 +618,67 @@ public class IndexScreen extends Screen {
 		this.visible.sort(comparator);
 
 		this.shownCount = PAGE_SIZE;
+		this.focusedCard = -1;
 		this.recomputeScrollBounds();
+	}
+
+	private void scrollToFocused() {
+		if (this.focusedCard < 0) {
+			return;
+		}
+
+		int rowHeight = this.cardHeight + GUTTER;
+		int cardTop = (this.focusedCard / this.columns) * rowHeight;
+		int cardBottom = cardTop + this.cardHeight;
+		int viewTop = Math.round(this.scroll);
+		int viewHeight = this.gridBottom - this.gridTop;
+
+		if (cardTop < viewTop) {
+			this.scroll = cardTop;
+		} else if (cardBottom > viewTop + viewHeight) {
+			this.scroll = cardBottom - viewHeight;
+		}
+
+		this.scroll = Math.max(0.0F, Math.min(this.scroll, this.maxScroll));
+	}
+
+	private boolean handleGridKey(int key) {
+		int shown = this.shownCap();
+
+		if (shown <= 0) {
+			return false;
+		}
+
+		if (key == 257 || key == 335) {
+			if (this.focusedCard >= 0 && this.focusedCard < this.visible.size()) {
+				this.openDetail(this.visible.get(this.focusedCard));
+			} else {
+				this.focusedCard = 0;
+				this.scrollToFocused();
+			}
+
+			return true;
+		}
+
+		if (key != 262 && key != 263 && key != 264 && key != 265) {
+			return false;
+		}
+
+		if (this.focusedCard < 0) {
+			this.focusedCard = 0;
+		} else if (key == 262) {
+			this.focusedCard = Math.min(shown - 1, this.focusedCard + 1);
+		} else if (key == 263) {
+			this.focusedCard = Math.max(0, this.focusedCard - 1);
+		} else if (key == 264) {
+			this.focusedCard = Math.min(shown - 1, this.focusedCard + this.columns);
+		} else {
+			this.focusedCard = Math.max(0, this.focusedCard - this.columns);
+		}
+
+		this.maybeLoadMore();
+		this.scrollToFocused();
+		return true;
 	}
 
 	private int shownCap() {
@@ -579,6 +773,11 @@ public class IndexScreen extends Screen {
 			this.relayout();
 		}
 
+		if (Errors.hasPending() && !this.errorOpen) {
+			this.errorCode = Errors.takePending();
+			this.errorOpen = true;
+		}
+
 		this.renderBackground(ctx, mouseX, mouseY, partialTick);
 
 		boolean modalOpen = this.detail != null;
@@ -596,6 +795,7 @@ public class IndexScreen extends Screen {
 			this.renderGrid(ctx, hoverX, hoverY);
 			this.renderScrollbar(ctx);
 			this.renderChipRow(ctx, hoverX, hoverY);
+			this.renderAddModeBanner(ctx, hoverX, hoverY);
 			this.renderPartnerRail(ctx, hoverX, hoverY);
 		}
 
@@ -645,6 +845,111 @@ public class IndexScreen extends Screen {
 		if (this.tosOpen) {
 			this.renderTos(ctx, mouseX, mouseY);
 		}
+
+		if (this.errorOpen) {
+			this.renderError(ctx, mouseX, mouseY);
+		}
+
+		if (this.nameInputOpen) {
+			this.renderNameInput(ctx, mouseX, mouseY);
+		}
+	}
+
+	private void renderNameInput(GuiGraphics ctx, int mouseX, int mouseY) {
+		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+
+		int pad = 16;
+		int cardWidth = Math.min(this.width - 40, 300);
+		int line = this.font.lineHeight;
+		int cardHeight = pad + line + 10 + FIELD_HEIGHT + 14 + FIELD_HEIGHT + pad;
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+		Theme.text(ctx, this.font, Theme.bold("New collection"), x + pad, y + pad, Theme.TEXT);
+
+		int fieldY = y + pad + line + 10;
+		int fieldWidth = cardWidth - pad * 2;
+		Theme.roundedRect(ctx, x + pad, fieldY, fieldWidth, FIELD_HEIGHT, Theme.RADIUS_PILL, Theme.SURFACE_ELEVATED);
+		Theme.roundedOutline(ctx, x + pad, fieldY, fieldWidth, FIELD_HEIGHT, Theme.RADIUS_PILL, Theme.ACCENT);
+
+		boolean caret = System.currentTimeMillis() / 500 % 2 == 0;
+		String display = this.nameInput.isEmpty() && !caret ? "Name" : this.nameInput + (caret ? "_" : "");
+		int textColor = this.nameInput.isEmpty() && !caret ? Theme.TEXT_MUTE : Theme.TEXT;
+		Theme.text(ctx, this.font, Theme.clip(this.font, display, fieldWidth - 12), x + pad + 6,
+				fieldY + (FIELD_HEIGHT - line) / 2 + 1, textColor);
+
+		int btnY = fieldY + FIELD_HEIGHT + 14;
+		int cancelWidth = this.font.width(Theme.bold("Cancel")) + 20;
+		int createWidth = this.font.width(Theme.bold("Create")) + 20;
+		this.nameCancel.set(x + pad, btnY, cancelWidth, FIELD_HEIGHT);
+		this.nameConfirm.set(x + cardWidth - pad - createWidth, btnY, createWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.nameCancel, "Cancel", mouseX, mouseY, false);
+		this.pillButton(ctx, this.nameConfirm, "Create", mouseX, mouseY, true);
+	}
+
+	public void showError(String code) {
+		this.errorCode = code;
+		this.errorOpen = true;
+	}
+
+	private void renderError(GuiGraphics ctx, int mouseX, int mouseY) {
+		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+
+		int pad = 16;
+		int cardWidth = Math.min(this.width - 40, 330);
+		int line = this.font.lineHeight;
+		int innerWidth = cardWidth - pad * 2 - 4;
+
+		String discord = RemoteContent.discord();
+		boolean hasDiscord = discord != null && !discord.isBlank();
+
+		List<String> desc = this.wrap("Report this bug using the code you were given in the discord server below.",
+				innerWidth, 3);
+
+		int cardHeight = pad + line + 8 + line + 10 + desc.size() * (line + 2) + 8 + line + 16 + FIELD_HEIGHT + pad;
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+		ctx.fill(x + 1, y + 1, x + 5, y + cardHeight - 1, 0xFFD64545);
+
+		int tx = x + pad + 4;
+		int ty = y + pad;
+
+		Theme.text(ctx, this.font, Theme.bold("Something went wrong"), tx, ty, Theme.TEXT);
+		ty += line + 8;
+
+		Theme.text(ctx, this.font, "Error code:", tx, ty, Theme.TEXT_ASH);
+		Theme.text(ctx, this.font, Theme.bold(this.errorCode), tx + this.font.width("Error code: "), ty, Theme.TEXT);
+		ty += line + 10;
+
+		for (String row : desc) {
+			Theme.text(ctx, this.font, row, tx, ty, Theme.TEXT_ASH);
+			ty += line + 2;
+		}
+
+		ty += 8;
+
+		if (hasDiscord) {
+			String linkText = Theme.clip(this.font, discord, innerWidth);
+			int linkWidth = this.font.width(linkText);
+			this.errorReport.set(tx, ty, linkWidth, line);
+			boolean hover = this.errorReport.contains(mouseX, mouseY);
+			int color = hover ? Theme.ACCENT_BRIGHT : Theme.ACCENT;
+			Theme.text(ctx, this.font, linkText, tx, ty, color);
+			ctx.fill(tx, ty + line - 1, tx + linkWidth, ty + line, color);
+		} else {
+			this.errorReport.set(0, 0, 0, 0);
+			Theme.text(ctx, this.font, "Discord link coming soon.", tx, ty, Theme.TEXT_MUTE);
+		}
+
+		int closeWidth = this.font.width(Theme.bold("Close")) + 20;
+		int closeY = y + cardHeight - pad - FIELD_HEIGHT;
+		this.errorClose.set(x + cardWidth - pad - closeWidth, closeY, closeWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.errorClose, "Close", mouseX, mouseY, false);
 	}
 
 	private void openTerms() {
@@ -1212,6 +1517,7 @@ public class IndexScreen extends Screen {
 						Theme.failure();
 						this.status = "Download failed. Press Retry to try again.";
 						this.detailDownloadLocked = false;
+						this.showError(Errors.DOWNLOAD);
 					}
 				}
 
@@ -1256,6 +1562,17 @@ public class IndexScreen extends Screen {
 	private void renderChipRow(GuiGraphics ctx, int mouseX, int mouseY) {
 		ctx.fill(RAIL_WIDTH, TOP_BAR_HEIGHT, this.width, TOP_BAR_HEIGHT + this.chipRowHeight, Theme.BACKDROP);
 
+		if (this.profilePoster != null) {
+			this.renderProfileHeader(ctx, mouseX, mouseY);
+			return;
+		}
+
+		if (this.page == Page.SAVED) {
+			this.renderCollectionChips(ctx, mouseX, mouseY);
+			this.pillButton(ctx, this.sortButton, "Sort: " + this.sort.label(), mouseX, mouseY, false);
+			return;
+		}
+
 		for (int i = 0; i < this.chipRects.size(); i++) {
 			Rect rect = this.chipRects.get(i);
 			Category value = this.chipOrder.get(i);
@@ -1276,6 +1593,305 @@ public class IndexScreen extends Screen {
 		}
 
 		this.pillButton(ctx, this.sortButton, "Sort: " + this.sort.label(), mouseX, mouseY, false);
+	}
+
+	private void renderCollectionChips(GuiGraphics ctx, int mouseX, int mouseY) {
+		List<String> names = CollectionStore.names();
+
+		for (int i = 0; i < this.collectionChips.size(); i++) {
+			String label = i == 0 ? "All saved" : (i - 1 < names.size() ? names.get(i - 1) : "");
+			boolean active = i == 0 ? this.activeCollection == null : label.equals(this.activeCollection);
+			this.chipPill(ctx, this.collectionChips.get(i), label, active, mouseX, mouseY);
+		}
+
+		this.chipPill(ctx, this.newCollectionChip, "+ New", false, mouseX, mouseY);
+
+		if (this.activeCollection != null) {
+			this.chipPill(ctx, this.addPostsChip, "+ Add posts", false, mouseX, mouseY);
+		}
+	}
+
+	private void chipPill(GuiGraphics ctx, Rect rect, String label, boolean active, int mouseX, int mouseY) {
+		boolean hovered = rect.contains(mouseX, mouseY);
+		int fill = active ? Theme.ACCENT : (hovered ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
+		float hover = Theme.buttonHover(rect, hovered);
+		float scale = Theme.popScale(rect, 1.0F + Theme.HOVER_SCALE * hover);
+		Theme.pushScale(ctx, rect.x, rect.y, rect.width, rect.height, scale);
+		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL, fill);
+		Theme.text(ctx, this.font, Theme.bold(Theme.clip(this.font, label, rect.width - 8)), rect.x + 6,
+				rect.y + (CHIP_HEIGHT - this.font.lineHeight) / 2 + 1, active ? Theme.ON_ACCENT : Theme.TEXT_MUTE);
+		Theme.pop(ctx);
+	}
+
+	private void renderAddModeBanner(GuiGraphics ctx, int mouseX, int mouseY) {
+		if (this.addingToCollection == null) {
+			return;
+		}
+
+		int height = 20;
+		int y = TOP_BAR_HEIGHT + this.chipRowHeight;
+		ctx.fill(RAIL_WIDTH, y, this.width, y + height, Theme.ACCENT);
+
+		String text = "Tap posts to add them to \"" + this.addingToCollection + "\"";
+		Theme.text(ctx, this.font, Theme.bold(Theme.clip(this.font, text, this.contentWidth - 90)),
+				this.contentX, y + (height - this.font.lineHeight) / 2, Theme.ON_ACCENT);
+
+		int doneWidth = this.font.width(Theme.bold("Done")) + 16;
+		this.addModeDone.set(this.contentX + this.contentWidth - doneWidth, y + 2, doneWidth, height - 4);
+		boolean hovered = this.addModeDone.contains(mouseX, mouseY);
+		Theme.roundedRect(ctx, this.addModeDone.x, this.addModeDone.y, doneWidth, height - 4, Theme.RADIUS_PILL,
+				hovered ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
+		Theme.text(ctx, this.font, Theme.bold("Done"), this.addModeDone.x + 8, this.addModeDone.y + 2, Theme.TEXT);
+	}
+
+	private void renderCollectionMenu(GuiGraphics ctx, int mouseX, int mouseY, SchematicEntry entry) {
+		this.collectionMenuRects.clear();
+		List<String> names = CollectionStore.names();
+
+		int rowH = 15;
+		int menuWidth = 160;
+		int menuHeight = (names.size() + 1) * rowH + 8;
+		int mx = this.detailCollection.x;
+		int my = this.detailCollection.y - menuHeight - 4;
+
+		if (my < 4) {
+			my = this.detailCollection.y + 18;
+		}
+
+		if (mx + menuWidth > this.width - 4) {
+			mx = this.width - menuWidth - 4;
+		}
+
+		Theme.roundedRect(ctx, mx, my, menuWidth, menuHeight, Theme.RADIUS_CARD, Theme.SURFACE_ELEVATED);
+		Theme.roundedOutline(ctx, mx, my, menuWidth, menuHeight, Theme.RADIUS_CARD, Theme.HAIRLINE);
+
+		int cy = my + 4;
+
+		for (String name : names) {
+			Rect rect = new Rect();
+			rect.set(mx + 4, cy, menuWidth - 8, rowH);
+			this.collectionMenuRects.add(rect);
+
+			boolean in = CollectionStore.contains(name, entry.id());
+			boolean hovered = rect.contains(mouseX, mouseY);
+
+			if (in || hovered) {
+				Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL, Theme.SURFACE_CARD);
+			}
+
+			if (in) {
+				ctx.fill(rect.x, rect.y + 2, rect.x + 3, rect.y + rect.height - 2, Theme.ACCENT);
+			}
+
+			Theme.text(ctx, this.font, Theme.clip(this.font, name, menuWidth - 16), mx + (in ? 12 : 8), cy + 3,
+					in ? Theme.ACCENT_BRIGHT : Theme.TEXT);
+			cy += rowH;
+		}
+
+		this.collectionMenuNew.set(mx + 4, cy, menuWidth - 8, rowH);
+
+		if (this.collectionMenuNew.contains(mouseX, mouseY)) {
+			Theme.roundedRect(ctx, this.collectionMenuNew.x, cy, menuWidth - 8, rowH, Theme.RADIUS_PILL, Theme.SURFACE_CARD);
+		}
+
+		Theme.text(ctx, this.font, Theme.bold("+ New collection"), mx + 8, cy + 3, Theme.ACCENT);
+	}
+
+	private boolean clickCollectionMenu(double mouseX, double mouseY, SchematicEntry entry) {
+		List<String> names = CollectionStore.names();
+
+		for (int i = 0; i < this.collectionMenuRects.size() && i < names.size(); i++) {
+			if (this.collectionMenuRects.get(i).contains(mouseX, mouseY)) {
+				boolean nowIn = CollectionStore.toggle(names.get(i), entry.id());
+				Theme.click(nowIn ? 1.2F : 0.9F);
+				return true;
+			}
+		}
+
+		if (this.collectionMenuNew.contains(mouseX, mouseY)) {
+			Theme.click(1.1F);
+			this.collectionMenuOpen = false;
+			this.openNameInput(entry.id());
+			return true;
+		}
+
+		this.collectionMenuOpen = false;
+		return true;
+	}
+
+	private void renderProfileHeader(GuiGraphics ctx, int mouseX, int mouseY) {
+		int pad = 8;
+		int y = TOP_BAR_HEIGHT + pad;
+
+		int backWidth = this.font.width(Theme.bold("< Back")) + 12;
+		this.profileBack.set(this.contentX, y, backWidth, 13);
+		this.pillButton(ctx, this.profileBack, "< Back", mouseX, mouseY, false);
+
+		int avatarSize = 54;
+		int avatarX = this.contentX;
+		int avatarY = y + 18;
+		String ign = this.profileIgn != null && !this.profileIgn.isBlank() ? this.profileIgn : this.profilePoster;
+		Identifier avatar = ImageStore.avatar("https://mc-heads.net/avatar/" + Backend.encode(ign) + "/64.png");
+
+		if (avatar != null) {
+			Theme.image(ctx, avatar, avatarX, avatarY, avatarSize, avatarSize, 64, 64);
+		} else {
+			Theme.roundedRect(ctx, avatarX, avatarY, avatarSize, avatarSize, 6, Theme.SURFACE_ELEVATED);
+		}
+
+		int statsX = avatarX + avatarSize + 18;
+		int statsWidth = this.contentX + this.contentWidth - statsX;
+		int column = statsWidth / 3;
+		int statTop = avatarY + avatarSize / 2 - this.font.lineHeight;
+		this.profileStat(ctx, statsX + column / 2, statTop,
+				this.profilePosts < 0 ? "..." : SchematicEntry.compact(this.profilePosts), "Posts");
+		this.profileStat(ctx, statsX + column + column / 2, statTop,
+				this.profileFollowers < 0 ? "..." : SchematicEntry.compact(this.profileFollowers), "Followers");
+		this.profileStat(ctx, statsX + column * 2 + column / 2, statTop,
+				this.profileDownloads < 0 ? "..." : SchematicEntry.compact(this.profileDownloads), "Downloads");
+
+		int nameY = avatarY + avatarSize + 6;
+		Theme.textScaled(ctx, this.font, Theme.bold(Theme.clip(this.font, this.profilePoster, this.contentWidth)),
+				this.contentX, nameY, 1.15F, Theme.TEXT);
+
+		boolean following = Follows.isFollowing(this.profilePoster);
+		String followLabel = following ? "Following" : "Follow";
+		int followWidth = Math.min(160, this.contentWidth);
+		int followY = nameY + Math.round(this.font.lineHeight * 1.15F) + 6;
+		this.profileFollow.set(this.contentX, followY, followWidth, 16);
+		this.pillButton(ctx, this.profileFollow, followLabel, mouseX, mouseY, !following);
+	}
+
+	private void profileStat(GuiGraphics ctx, int centerX, int topY, String value, String label) {
+		int valueWidth = this.font.width(Theme.bold(value));
+		Theme.text(ctx, this.font, Theme.bold(value), centerX - valueWidth / 2, topY, Theme.TEXT);
+		int labelWidth = this.font.width(label);
+		Theme.text(ctx, this.font, label, centerX - labelWidth / 2, topY + this.font.lineHeight + 2, Theme.TEXT_MUTE);
+	}
+
+	private void openProfile(String poster) {
+		this.profilePoster = poster;
+		this.profileIgn = null;
+		this.profileFollowers = -1;
+		this.profilePosts = -1;
+		this.profileDownloads = -1;
+		this.detail = null;
+		this.collectionMenuOpen = false;
+		this.page = Page.BROWSE;
+		this.category = Category.ALL;
+		this.setSearch("");
+		this.fetchCreator(poster);
+		this.layoutChips();
+		this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
+		this.scroll = 0.0F;
+		this.refilter();
+	}
+
+	private void closeProfile() {
+		this.profilePoster = null;
+		this.layoutChips();
+		this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
+		this.scroll = 0.0F;
+		this.refilter();
+	}
+
+	private void fetchCreator(String poster) {
+		Thread worker = new Thread(() -> {
+			com.google.gson.JsonObject body = Backend.getJson("/creator/" + Backend.encode(poster));
+
+			if (body == null) {
+				return;
+			}
+
+			String ign = body.has("ign") && !body.get("ign").isJsonNull() ? body.get("ign").getAsString() : "";
+			int followers = body.has("followers") && !body.get("followers").isJsonNull() ? body.get("followers").getAsInt() : 0;
+			int posts = body.has("posts") && !body.get("posts").isJsonNull() ? body.get("posts").getAsInt() : 0;
+			int downloads = body.has("downloads") && !body.get("downloads").isJsonNull() ? body.get("downloads").getAsInt() : 0;
+
+			Minecraft.getInstance().execute(() -> {
+				if (poster.equals(this.profilePoster)) {
+					this.profileIgn = ign;
+					this.profileFollowers = followers;
+					this.profilePosts = posts;
+					this.profileDownloads = downloads;
+				}
+			});
+		}, "schematicindex-creator");
+		worker.setDaemon(true);
+		worker.start();
+	}
+
+	private void setSearch(String value) {
+		this.query = value;
+
+		if (this.searchBox != null) {
+			this.searchBox.setValue(value);
+		}
+	}
+
+	private boolean clickCollectionChips(double mouseX, double mouseY) {
+		for (int i = 0; i < this.collectionChips.size(); i++) {
+			if (this.collectionChips.get(i).contains(mouseX, mouseY)) {
+				List<String> names = CollectionStore.names();
+				this.activeCollection = i == 0 ? null : (i - 1 < names.size() ? names.get(i - 1) : null);
+				Theme.click();
+				this.scroll = 0.0F;
+				this.layoutChips();
+				this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
+				this.refilter();
+				return true;
+			}
+		}
+
+		if (this.newCollectionChip.contains(mouseX, mouseY)) {
+			Theme.click(1.1F);
+			this.openNameInput(null);
+			return true;
+		}
+
+		if (this.activeCollection != null && this.addPostsChip.contains(mouseX, mouseY)) {
+			this.addingToCollection = this.activeCollection;
+			this.page = Page.BROWSE;
+			this.category = Category.ALL;
+			this.setSearch("");
+			Theme.click(1.1F);
+			this.layoutChips();
+			this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight + 20;
+			this.scroll = 0.0F;
+			this.refilter();
+			return true;
+		}
+
+		return false;
+	}
+
+	private void openNameInput(@Nullable String pendingPost) {
+		this.nameInputOpen = true;
+		this.nameInput = "";
+		this.namePendingPost = pendingPost;
+	}
+
+	private void confirmNameInput() {
+		String name = CollectionStore.normalize(this.nameInput);
+
+		if (!name.isEmpty()) {
+			CollectionStore.create(name);
+
+			if (this.namePendingPost != null) {
+				CollectionStore.toggle(name, this.namePendingPost);
+			} else {
+				this.activeCollection = name;
+			}
+		}
+
+		this.nameInputOpen = false;
+		this.namePendingPost = null;
+
+		if (this.page == Page.SAVED) {
+			this.layoutChips();
+			this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
+			this.refilter();
+		}
 	}
 
 	private void renderGrid(GuiGraphics ctx, int mouseX, int mouseY) {
@@ -1318,7 +1934,21 @@ public class IndexScreen extends Screen {
 
 				int x = this.contentX + column * (this.cardWidth + GUTTER);
 				int y = this.gridTop + row * rowHeight - Math.round(this.scroll);
-				this.renderCard(ctx, this.visible.get(index), x, y, mouseX, mouseY);
+				SchematicEntry card = this.visible.get(index);
+				this.renderCard(ctx, card, x, y, mouseX, mouseY);
+
+				if (index == this.focusedCard) {
+					Theme.roundedOutline(ctx, x - 1, y - 1, this.cardWidth + 2, this.cardHeight + 2,
+							Theme.RADIUS_CARD, Theme.ACCENT_BRIGHT);
+				}
+
+				if (this.addingToCollection != null && CollectionStore.contains(this.addingToCollection, card.id())) {
+					Theme.roundedOutline(ctx, x - 1, y - 1, this.cardWidth + 2, this.cardHeight + 2,
+							Theme.RADIUS_CARD, Theme.ACCENT);
+					int badge = this.font.width(Theme.bold("Added")) + 10;
+					Theme.roundedRect(ctx, x + this.cardWidth - badge - 4, y + 4, badge, 12, Theme.RADIUS_PILL, Theme.ACCENT);
+					Theme.text(ctx, this.font, Theme.bold("Added"), x + this.cardWidth - badge, y + 6, Theme.ON_ACCENT);
+				}
 			}
 		}
 
@@ -1558,7 +2188,10 @@ public class IndexScreen extends Screen {
 		y += this.font.lineHeight + 3;
 		this.uploadPicturesButton.set(leftX, y, leftW, FIELD_HEIGHT);
 		this.pillButton(ctx, this.uploadPicturesButton, "Upload Pictures", mouseX, mouseY, false);
-		y += FIELD_HEIGHT + 16;
+		y += FIELD_HEIGHT + 5;
+		Theme.text(ctx, this.font, Theme.clip(this.font, "Or drop a file, or Ctrl+V to paste an image or link", leftW),
+				leftX, y, Theme.TEXT_MUTE);
+		y += this.font.lineHeight + 11;
 
 		this.postButton.set(leftX, y, leftW, FIELD_HEIGHT);
 
@@ -1653,6 +2286,20 @@ public class IndexScreen extends Screen {
 		} else {
 			this.formImagePrev.set(0, 0, 0, 0);
 			this.formImageNext.set(0, 0, 0, 0);
+		}
+
+		if (entry.imageCount() > 0) {
+			int xs = 14;
+			int rx = x + pad + imageWidth - xs - 4;
+			int ry = y + pad + 4;
+			this.formImageRemove.set(rx, ry, xs, xs);
+			boolean removeHover = this.formImageRemove.contains(mouseX, mouseY);
+			Theme.roundedRect(ctx, rx, ry, xs, xs, Theme.RADIUS_CARD, removeHover ? 0xEED64545 : 0xCC0F1114);
+			Theme.roundedOutline(ctx, rx, ry, xs, xs, Theme.RADIUS_CARD, Theme.HAIRLINE);
+			this.drawLine(ctx, rx + 4, ry + 4, rx + xs - 4, ry + xs - 4, Theme.TEXT);
+			this.drawLine(ctx, rx + 4, ry + xs - 4, rx + xs - 4, ry + 4, Theme.TEXT);
+		} else {
+			this.formImageRemove.set(0, 0, 0, 0);
 		}
 
 		int infoX = x + pad + imageWidth + pad;
@@ -2127,7 +2774,7 @@ public class IndexScreen extends Screen {
 						p.get("downloads").getAsInt(), p.get("likes").getAsInt(), p.get("postedAt").getAsLong(),
 						"", 0, -1, -1, false,
 						p.has("thumbnailUrl") && !p.get("thumbnailUrl").isJsonNull() ? p.get("thumbnailUrl").getAsString() : null,
-						List.of(), null, null, 0L, false));
+						List.of(), null, null, 0L, false, 0.0));
 			}
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.debug("Could not apply my stats", e);
@@ -2154,7 +2801,17 @@ public class IndexScreen extends Screen {
 			Theme.roundedRect(ctx, rect.x + 1, rect.y + 1, fillWidth, rect.height - 2, Theme.RADIUS_PILL, Theme.DOWNLOAD_FILL);
 		}
 
-		String label = Theme.bold("Uploading" + ".".repeat((int) (System.currentTimeMillis() / 400 % 3) + 1));
+		int percent = Math.round(fraction * 100.0F);
+		long elapsed = System.currentTimeMillis() - this.uploadStartedAt;
+		String dots = ".".repeat((int) (System.currentTimeMillis() / 400 % 3) + 1);
+		String text = "Uploading " + percent + "%";
+
+		if (fraction > 0.05F && fraction < 0.95F) {
+			long remaining = Math.max(1, (long) (elapsed / 1000.0 * (1.0 - fraction) / fraction));
+			text += "  ~" + remaining + "s";
+		}
+
+		String label = Theme.bold(text + dots);
 		Theme.text(ctx, this.font, label, rect.x + (rect.width - this.font.width(label)) / 2,
 				rect.y + (rect.height - this.font.lineHeight) / 2 + 1, Theme.ON_ACCENT);
 	}
@@ -2610,8 +3267,8 @@ public class IndexScreen extends Screen {
 		float fade = Math.min(1.0F, Math.max(0.0F, open / 140.0F));
 		ctx.fill(0, 0, this.width, this.height, ((int) (0x99 * fade) << 24));
 
-		int modalWidth = Math.min(this.contentWidth, this.detailModel ? 688 : 550);
-		int modalHeight = Math.min(this.height - 24, this.detailModel ? 362 : 290);
+		int modalWidth = Math.min(this.width - 24, this.detailModel ? 860 : 688);
+		int modalHeight = Math.min(this.height - 24, this.detailModel ? 453 : 363);
 		int x = (this.width - modalWidth) / 2;
 		int y = (this.height - modalHeight) / 2;
 		int pad = 12;
@@ -2638,9 +3295,9 @@ public class IndexScreen extends Screen {
 				if (!SchematicPreview.hasSchematic(slot)) {
 					message = "No schematic files found";
 				} else if (SchematicPreview.failed(slot)) {
-					message = SchematicPreview.hosted(slot)
+					message = (SchematicPreview.hosted(slot)
 							? "Can't connect. Click to retry."
-							: "Couldn't load preview. Click to retry.";
+							: "Couldn't load preview. Click to retry.") + " (" + Errors.PREVIEW + ")";
 				} else {
 					message = "Rendering" + ".".repeat((int) (System.currentTimeMillis() / 400 % 3) + 1);
 				}
@@ -2693,7 +3350,7 @@ public class IndexScreen extends Screen {
 
 		Theme.text(ctx, this.font, Theme.bold(Theme.clipBold(this.font, entry.title(), infoWidth - ageWidth - 6)),
 				infoX, line, Theme.TEXT);
-		line += this.font.lineHeight + 4;
+		line += this.font.lineHeight + 11;
 
 		if (this.followConfirm && System.currentTimeMillis() - this.followConfirmAt > 3000L) {
 			this.followConfirm = false;
@@ -2702,19 +3359,26 @@ public class IndexScreen extends Screen {
 		boolean following = Follows.isFollowing(entry.poster());
 		String followLabel = !following ? "Follow" : (this.followConfirm ? "Unfollow?" : "Following");
 		int followWidth = this.font.width(Theme.bold(followLabel)) + 12;
+		int viewWidth = this.font.width(Theme.bold("View Profile")) + 12;
 		this.detailFollow.set(infoX + infoWidth - followWidth, line - 1, followWidth, 12);
+		this.detailViewProfile.set(this.detailFollow.x - 6 - viewWidth, line - 1, viewWidth, 12);
 		this.pillButton(ctx, this.detailFollow, followLabel, mouseX, mouseY, following && !this.followConfirm);
+		this.pillButton(ctx, this.detailViewProfile, "View Profile", mouseX, mouseY, false);
 
-		Theme.text(ctx, this.font, Theme.clip(this.font, "Posted by " + entry.poster(), infoWidth - followWidth - 6),
-				infoX, line, Theme.TEXT_MUTE);
-		line += this.font.lineHeight + 3;
+		String postedBy = "Posted by " + entry.poster();
+		int postedRoom = Math.max(20, this.detailViewProfile.x - infoX - 6);
+		this.detailPosterRect.set(infoX, line, Math.min(this.font.width(postedBy), postedRoom), this.font.lineHeight);
+		boolean posterHover = this.detailPosterRect.contains(mouseX, mouseY);
+		Theme.text(ctx, this.font, Theme.clip(this.font, postedBy, postedRoom),
+				infoX, line, posterHover ? Theme.ACCENT_BRIGHT : Theme.TEXT_MUTE);
+		line += this.font.lineHeight + 8;
 
 		Theme.text(ctx, this.font, Theme.clip(this.font, "Designed by " + entry.designer(), infoWidth), infoX, line, Theme.TEXT_MUTE);
-		line += this.font.lineHeight + 6;
+		line += this.font.lineHeight + 16;
 
-		line = this.metaRow(ctx, "Dimensions", entry.dimensionsLabel(), infoX, line, infoWidth);
-		line = this.metaRow(ctx, "Total Blocks", entry.blockCountLabel(), infoX, line, infoWidth);
-		line = this.metaRow(ctx, "Volume", entry.volumeLabel(), infoX, line, infoWidth);
+		line = this.metaRow(ctx, "Dimensions", entry.dimensionsLabel(), infoX, line, infoWidth) + 8;
+		line = this.metaRow(ctx, "Total Blocks", entry.blockCountLabel(), infoX, line, infoWidth) + 8;
+		line = this.metaRow(ctx, "Volume", entry.volumeLabel(), infoX, line, infoWidth) + 8;
 
 		Theme.text(ctx, this.font, "Downloads", infoX, line, Theme.TEXT_ASH);
 		String downloads = entry.downloadsLabel();
@@ -2722,7 +3386,7 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, downloads, infoX + infoWidth - downloadsWidth, line, Theme.TEXT);
 		Theme.downloadGlyph(ctx, infoX + infoWidth - downloadsWidth - Theme.DOWNLOAD_GLYPH_WIDTH - 3,
 				line + 2, Theme.TEXT_MUTE);
-		line += this.font.lineHeight + 2;
+		line += this.font.lineHeight + 9;
 
 		boolean liked = isLikedBy(entry);
 		String likeCount = SchematicEntry.compact(likesOf(entry));
@@ -2731,7 +3395,7 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, likeCount, infoX + infoWidth - likeWidth, line, liked ? Theme.ACCENT_BRIGHT : Theme.TEXT);
 		this.detailHeart.set(infoX + infoWidth - likeWidth - HEART_SIZE - 4, line - 1, HEART_SIZE, HEART_SIZE);
 		Theme.heartPopped(ctx, this.detailHeart.x, this.detailHeart.y, liked, popAge(entry));
-		line += this.font.lineHeight + 2;
+		line += this.font.lineHeight + 9;
 
 		if (this.detailModel) {
 			line += 6;
@@ -2786,15 +3450,36 @@ public class IndexScreen extends Screen {
 		String saveLabel = isSaved(entry) ? "Saved" : "Save for later";
 		int saveWidth = this.font.width(Theme.bold(saveLabel)) + 18;
 
+		int loadWidth = this.font.width(Theme.bold("Load")) + 18;
+		int collectWidth = this.font.width(Theme.bold("Collections")) + 16;
+
 		this.detailClose.set(x + pad, buttonY, closeWidth, 16);
 		this.detailSave.set(this.detailClose.x + closeWidth + 6, buttonY, saveWidth, 16);
+		this.detailCollection.set(this.detailSave.x + saveWidth + 6, buttonY, collectWidth, 16);
 		this.detailDownload.set(x + modalWidth - pad - downloadWidth, buttonY, downloadWidth, 16);
 		this.detailPreview3d.set(this.detailDownload.x - 6 - previewWidth, buttonY, previewWidth, 16);
+		this.detailLoad.set(this.detailPreview3d.x - 6 - loadWidth, buttonY, loadWidth, 16);
 
 		this.pillButton(ctx, this.detailClose, "Close", mouseX, mouseY, false);
 		this.saveButton(ctx, this.detailSave, isSaved(entry), mouseX, mouseY);
+		this.pillButton(ctx, this.detailCollection, "Collections", mouseX, mouseY, this.collectionMenuOpen);
+		this.pillButton(ctx, this.detailLoad, "Load", mouseX, mouseY, true);
 		this.pillButton(ctx, this.detailPreview3d, previewLabel, mouseX, mouseY, false);
 		this.downloadButton(ctx, this.detailDownload, entry, mouseX, mouseY);
+
+		if (this.collectionMenuOpen) {
+			this.renderCollectionMenu(ctx, mouseX, mouseY, entry);
+		}
+
+		if (this.detailLoad.contains(mouseX, mouseY)) {
+			String tip = "Loads the schematic directly into minecraft";
+			int tipWidth = this.font.width(tip) + 8;
+			int tipX = Math.max(x + 2, Math.min(this.detailLoad.x, x + modalWidth - tipWidth - 2));
+			int tipY = buttonY - 16;
+			Theme.roundedRect(ctx, tipX, tipY, tipWidth, 12, Theme.RADIUS_PILL, Theme.SURFACE_ELEVATED);
+			Theme.roundedOutline(ctx, tipX, tipY, tipWidth, 12, Theme.RADIUS_PILL, Theme.HAIRLINE);
+			Theme.text(ctx, this.font, tip, tipX + 4, tipY + 2, Theme.TEXT);
+		}
 
 		int cornerSize = 14;
 		this.detailCornerClose.set(x + modalWidth - cornerSize / 2, y - cornerSize / 2, cornerSize, cornerSize);
@@ -3154,6 +3839,30 @@ public class IndexScreen extends Screen {
 
 		this.registerButtonPress(mouseX, mouseY);
 
+		if (this.errorOpen) {
+			if (this.errorReport.contains(mouseX, mouseY)) {
+				this.openLink(RemoteContent.discord());
+			} else if (this.errorClose.contains(mouseX, mouseY)) {
+				Theme.click(0.9F);
+				this.errorOpen = false;
+			}
+
+			return true;
+		}
+
+		if (this.nameInputOpen) {
+			if (this.nameConfirm.contains(mouseX, mouseY)) {
+				Theme.click(1.1F);
+				this.confirmNameInput();
+			} else if (this.nameCancel.contains(mouseX, mouseY)) {
+				Theme.click(0.9F);
+				this.nameInputOpen = false;
+				this.namePendingPost = null;
+			}
+
+			return true;
+		}
+
 		if (this.bannerActive && this.bannerEntering && this.detail == null && !this.tosOpen
 				&& !this.tutorialActive && !this.designerWarnOpen && this.bannerClose.contains(mouseX, mouseY)) {
 			this.dismissBanner();
@@ -3263,11 +3972,61 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
+		if (this.profilePoster != null) {
+			if (this.profileBack.contains(mouseX, mouseY)) {
+				Theme.click(0.9F);
+				this.closeProfile();
+				return true;
+			}
+
+			if (this.profileFollow.contains(mouseX, mouseY)) {
+				String poster = this.profilePoster;
+				boolean wasFollowing = Follows.isFollowing(poster);
+				Follows.toggle(poster);
+
+				if (wasFollowing) {
+					if (this.profileFollowers > 0) {
+						this.profileFollowers--;
+					}
+
+					Theme.click(0.8F);
+					this.verifyUnfollow(poster);
+				} else {
+					if (this.profileFollowers >= 0) {
+						this.profileFollowers++;
+					}
+
+					Theme.follow();
+					this.verifyFollow(null, poster);
+				}
+
+				return true;
+			}
+		}
+
+		if (this.addingToCollection != null && this.addModeDone.contains(mouseX, mouseY)) {
+			String collection = this.addingToCollection;
+			this.addingToCollection = null;
+			this.page = Page.SAVED;
+			this.activeCollection = collection;
+			this.setSearch("");
+			Theme.click(0.9F);
+			this.layoutChips();
+			this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
+			this.scroll = 0.0F;
+			this.refilter();
+			return true;
+		}
+
 		if (this.sortButton.contains(mouseX, mouseY)) {
 			this.sort = this.sort.next();
 			Theme.click();
 			this.layoutChips();
 			this.refilter();
+			return true;
+		}
+
+		if (this.page == Page.SAVED && this.clickCollectionChips(mouseX, mouseY)) {
 			return true;
 		}
 
@@ -3285,41 +4044,50 @@ public class IndexScreen extends Screen {
 		SchematicEntry hit = this.entryAt(mouseX, mouseY);
 
 		if (hit != null) {
-			if (this.heartAt(hit, mouseX, mouseY)) {
+			if (this.addingToCollection != null) {
+				boolean nowIn = CollectionStore.toggle(this.addingToCollection, hit.id());
+				Theme.click(nowIn ? 1.2F : 0.9F);
+			} else if (this.heartAt(hit, mouseX, mouseY)) {
 				toggleLike(hit);
 
 				if (this.page == Page.SAVED) {
 					this.refilter();
 				}
 			} else {
-				this.detail = hit;
-				Backend.viewAsync(hit.id());
-
-				if (hit.imageUrls().isEmpty()) {
-					ImageStore.preload(hit.imageStart(), hit.imageCount());
-				} else {
-					ImageStore.preload(hit.imageUrls());
-				}
-				Theme.click(1.2F);
-				this.detailOpenedAt = System.currentTimeMillis();
-				this.detailImage = 0;
-				this.detailModel = false;
-				this.detailYaw = 35.0F;
-				this.detailPitch = 28.0F;
-				this.detailZoom = 1.0F;
-				this.detailLayer = 1.0F;
-				this.followConfirm = false;
-				this.pendingOverwrite = null;
-				this.reportOpen = false;
-				this.reportContextOpen = false;
-				this.detailDownloadLocked = false;
-				this.status = "";
+				this.openDetail(hit);
 			}
 
 			return true;
 		}
 
 		return super.mouseClicked(event, doubleClick);
+	}
+
+	private void openDetail(SchematicEntry entry) {
+		this.detail = entry;
+		this.collectionMenuOpen = false;
+		Backend.viewAsync(entry.id());
+
+		if (entry.imageUrls().isEmpty()) {
+			ImageStore.preload(entry.imageStart(), entry.imageCount());
+		} else {
+			ImageStore.preload(entry.imageUrls());
+		}
+
+		Theme.click(1.2F);
+		this.detailOpenedAt = System.currentTimeMillis();
+		this.detailImage = 0;
+		this.detailModel = false;
+		this.detailYaw = 35.0F;
+		this.detailPitch = 28.0F;
+		this.detailZoom = 1.0F;
+		this.detailLayer = 1.0F;
+		this.followConfirm = false;
+		this.pendingOverwrite = null;
+		this.reportOpen = false;
+		this.reportContextOpen = false;
+		this.detailDownloadLocked = false;
+		this.status = "";
 	}
 
 	private void switchPage(Page target) {
@@ -3336,6 +4104,9 @@ public class IndexScreen extends Screen {
 		this.page = target;
 		this.scroll = 0.0F;
 		this.formStatus = "";
+		this.addingToCollection = null;
+		this.activeCollection = null;
+		this.profilePoster = null;
 		this.setFocused(null);
 		this.relayout();
 	}
@@ -3427,6 +4198,12 @@ public class IndexScreen extends Screen {
 			}
 
 			this.formCategory = tags[(index + 1) % tags.length];
+			return true;
+		}
+
+		if (this.formImageRemove.contains(mouseX, mouseY) && !this.formPictures.isEmpty()) {
+			this.removeFormPicture(this.formPicturePreview);
+			Theme.click(0.9F);
 			return true;
 		}
 
@@ -3564,12 +4341,147 @@ public class IndexScreen extends Screen {
 		return height > 0 ? height : Math.max(1, this.detail == null ? 1 : this.detail.sizeY());
 	}
 
+	private String downloadFileName(SchematicEntry entry) {
+		return entry.title() + " - The Schematic Index Addon.litematic";
+	}
+
+	// Follows are optimistic in the UI; confirm with the server on a background thread and
+	// revert with an error code if it could not be saved (e.g. the user is offline).
+	private void verifyFollow(String postId, String poster) {
+		Thread worker = new Thread(() -> {
+			int status = Backend.followStatus(postId, poster);
+			boolean ok = status >= 200 && status < 300;
+			String ign = poster;
+
+			if (ok) {
+				com.google.gson.JsonObject creator = Backend.getJson("/creator/" + Backend.encode(poster));
+
+				if (creator != null && creator.has("ign") && !creator.get("ign").isJsonNull()
+						&& !creator.get("ign").getAsString().isBlank()) {
+					ign = creator.get("ign").getAsString();
+				}
+			}
+
+			String skinName = ign;
+			Minecraft.getInstance().execute(() -> {
+				if (ok) {
+					ItemStack head = new ItemStack(Items.PLAYER_HEAD);
+					head.set(DataComponents.PROFILE, ResolvableProfile.createUnresolved(skinName));
+					Toasts.push("Followed " + poster, "You'll be notified whenever they post a new schematic", head);
+				} else {
+					if (Follows.isFollowing(poster)) {
+						Follows.toggle(poster);
+					}
+
+					if (poster.equals(this.profilePoster)) {
+						this.fetchCreator(poster);
+					}
+
+					this.showError(Errors.FOLLOW);
+				}
+			});
+		}, "schematicindex-follow");
+		worker.setDaemon(true);
+		worker.start();
+	}
+
+	private void verifyUnfollow(String poster) {
+		Thread worker = new Thread(() -> {
+			int status = Backend.unfollowStatus(poster);
+			Minecraft.getInstance().execute(() -> {
+				if (status < 200 || status >= 300) {
+					if (!Follows.isFollowing(poster)) {
+						Follows.toggle(poster);
+					}
+
+					if (poster.equals(this.profilePoster)) {
+						this.fetchCreator(poster);
+					}
+
+					this.showError(Errors.FOLLOW);
+				}
+			});
+		}, "schematicindex-unfollow");
+		worker.setDaemon(true);
+		worker.start();
+	}
+
+	private void loadSchematic(SchematicEntry entry) {
+		Theme.click(1.2F);
+		Path target = LoadedCache.resolve(Download.safeName(this.downloadFileName(entry)));
+
+		if (Files.exists(target)) {
+			this.loadIntoGame(target, entry.title());
+			return;
+		}
+
+		String url = entry.fileUrl();
+		Path source = url == null || url.isBlank() ? SchematicPreview.pathFor(entry.schematicSlot()) : null;
+		this.status = "Loading the schematic...";
+
+		Thread worker = new Thread(() -> {
+			boolean ok;
+
+			try {
+				if (url != null && !url.isBlank()) {
+					ok = Backend.download(url, target);
+				} else if (source != null) {
+					Files.createDirectories(target.getParent());
+					Files.copy(source, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+					ok = true;
+				} else {
+					ok = false;
+				}
+			} catch (Throwable e) {
+				SchematicIndexMod.LOGGER.debug("Load download failed", e);
+				ok = false;
+			}
+
+			boolean success = ok && Files.exists(target);
+			Minecraft.getInstance().execute(() -> {
+				if (success) {
+					this.loadIntoGame(target, entry.title());
+				} else {
+					this.status = "";
+					this.showError(Errors.LOAD);
+				}
+			});
+		}, "schematicindex-load");
+		worker.setDaemon(true);
+		worker.start();
+	}
+
+	private void loadIntoGame(Path file, String name) {
+		try {
+			LitematicaSchematic schematic = LitematicaSchematic.createFromFile(
+					file.getParent(), file.getFileName().toString(), FileType.LITEMATICA_SCHEMATIC);
+
+			if (schematic == null) {
+				this.showError(Errors.LOAD);
+				return;
+			}
+
+			SchematicHolder.getInstance().addSchematic(schematic, false);
+
+			Minecraft client = Minecraft.getInstance();
+			BlockPos origin = client.player != null ? client.player.blockPosition() : BlockPos.ZERO;
+			SchematicPlacement placement = SchematicPlacement.createFor(schematic, origin, name, true, true);
+			DataManager.getSchematicPlacementManager().addSchematicPlacement(placement, true);
+
+			this.status = "";
+			this.onClose();
+		} catch (Throwable e) {
+			SchematicIndexMod.LOGGER.warn("Loading into game failed", e);
+			this.showError(Errors.LOAD);
+		}
+	}
+
 	private void startDownload(SchematicEntry entry) {
 		if (Settings.confirmOverwrite() && this.pendingOverwrite == null) {
 			Download.Progress progress = Download.progress(entry.id());
 			boolean alreadyDone = progress != null && progress.state() == Download.State.DONE;
 
-			if (!alreadyDone && Files.exists(Download.resolveTarget(entry.title() + ".litematic"))) {
+			if (!alreadyDone && Files.exists(Download.resolveTarget(this.downloadFileName(entry)))) {
 				this.pendingOverwrite = entry;
 				Theme.click(0.9F);
 				return;
@@ -3584,7 +4496,7 @@ public class IndexScreen extends Screen {
 		String url = entry.fileUrl();
 
 		if (url != null && !url.isBlank()) {
-			Download.start(entry.id(), entry.title() + ".litematic", url, null);
+			Download.start(entry.id(), this.downloadFileName(entry), url, null);
 		} else {
 			Path source = SchematicPreview.pathFor(entry.schematicSlot());
 
@@ -3593,7 +4505,7 @@ public class IndexScreen extends Screen {
 				return;
 			}
 
-			Download.start(entry.id(), entry.title() + ".litematic", null, source);
+			Download.start(entry.id(), this.downloadFileName(entry), null, source);
 		}
 
 		Backend.downloadAsync(entry.id());
@@ -3700,7 +4612,8 @@ public class IndexScreen extends Screen {
 				} else if (result.message() != null && !result.message().isBlank()) {
 					this.formStatus = result.message();
 				} else {
-					this.formStatus = "Upload failed (" + result.status() + "). Check the file and try again.";
+					this.formStatus = "Upload failed.";
+					this.showError(Errors.UPLOAD);
 				}
 			});
 		}, "schematicindex-upload");
@@ -3788,6 +4701,23 @@ public class IndexScreen extends Screen {
 		});
 	}
 
+	private void removeFormPicture(int index) {
+		if (index < 0 || index >= this.formPictures.size()) {
+			return;
+		}
+
+		List<Path> remaining = new ArrayList<>(this.formPictures);
+		remaining.remove(index);
+
+		this.formPictures.clear();
+		this.formPictures.addAll(remaining);
+		this.formPictureStart = ImageStore.register(remaining);
+		this.formPicturePreview = remaining.isEmpty() ? 0 : Math.min(index, remaining.size() - 1);
+		this.formStatus = remaining.isEmpty()
+				? "All pictures removed."
+				: remaining.size() + (remaining.size() == 1 ? " picture selected." : " pictures selected.");
+	}
+
 	private void applyPictures(List<Path> chosen) {
 		boolean truncated = chosen.size() > 5;
 		List<Path> capped = truncated ? List.copyOf(chosen.subList(0, 5)) : chosen;
@@ -3808,9 +4738,27 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
+		if (this.collectionMenuOpen) {
+			this.clickCollectionMenu(mouseX, mouseY, entry);
+			return;
+		}
+
+		if (this.detailCollection.contains(mouseX, mouseY)) {
+			Theme.click(1.0F);
+			this.collectionMenuOpen = true;
+			return;
+		}
+
+		if (this.detailPosterRect.contains(mouseX, mouseY) || this.detailViewProfile.contains(mouseX, mouseY)) {
+			Theme.click(1.0F);
+			this.openProfile(entry.poster());
+			return;
+		}
+
 		if (this.detailClose.contains(mouseX, mouseY) || this.detailCornerClose.contains(mouseX, mouseY)) {
 			Theme.click(0.9F);
 			this.detail = null;
+			this.collectionMenuOpen = false;
 			this.followConfirm = false;
 			this.pendingOverwrite = null;
 			this.reportOpen = false;
@@ -3844,21 +4792,21 @@ public class IndexScreen extends Screen {
 		} else if (this.detailFollow.contains(mouseX, mouseY)) {
 			if (!Follows.isFollowing(entry.poster())) {
 				Follows.toggle(entry.poster());
-				Backend.followAsync(entry.id(), entry.poster());
 				Theme.follow();
-				Toasts.push("Followed " + entry.poster(), "You'll be notified whenever someone you follow, posts",
-						new ItemStack(Items.PLAYER_HEAD));
 				this.followConfirm = false;
+				this.verifyFollow(entry.id(), entry.poster());
 			} else if (!this.followConfirm) {
 				this.followConfirm = true;
 				this.followConfirmAt = System.currentTimeMillis();
 				Theme.click(0.9F);
 			} else {
 				Follows.toggle(entry.poster());
-				Backend.unfollowAsync(entry.poster());
 				Theme.click(0.8F);
 				this.followConfirm = false;
+				this.verifyUnfollow(entry.poster());
 			}
+		} else if (this.detailLoad.contains(mouseX, mouseY)) {
+			this.loadSchematic(entry);
 		} else if (this.detailDownload.contains(mouseX, mouseY)) {
 			if (!this.detailDownloadLocked) {
 				this.startDownload(entry);
@@ -4046,7 +4994,7 @@ public class IndexScreen extends Screen {
 			buttons = new Rect[]{this.reportSubmit};
 		} else if (this.detail != null) {
 			buttons = new Rect[]{this.detailClose, this.detailCornerClose, this.detailReport, this.detailSave,
-					this.detailFollow, this.detailDownload, this.detailPreview3d, this.resetViewButton,
+					this.detailFollow, this.detailLoad, this.detailDownload, this.detailPreview3d, this.resetViewButton,
 					this.cutawayToggle, this.freeLookToggle};
 		} else {
 			buttons = new Rect[]{this.closeButton, this.sortButton, this.retryButton, this.unlockButton,
@@ -4099,6 +5047,14 @@ public class IndexScreen extends Screen {
 
 	@Override
 	public boolean charTyped(CharacterEvent event) {
+		if (this.nameInputOpen) {
+			if (event.codepoint() >= ' ' && this.nameInput.length() < 40) {
+				this.nameInput += event.codepointAsString();
+			}
+
+			return true;
+		}
+
 		if (this.reportContextOpen) {
 			if (event.codepoint() >= ' ' && this.reportContext.length() < REPORT_CONTEXT_MAX) {
 				this.reportContext += event.codepointAsString();
@@ -4111,7 +5067,213 @@ public class IndexScreen extends Screen {
 	}
 
 	@Override
+	public void onFilesDrop(List<Path> paths) {
+		if (this.page != Page.UPLOAD || !this.uploadFormOpen || paths.isEmpty()) {
+			super.onFilesDrop(paths);
+			return;
+		}
+
+		Path schematic = null;
+		List<Path> images = new ArrayList<>();
+
+		for (Path path : paths) {
+			String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+
+			if (name.endsWith(".litematic")) {
+				schematic = path;
+			} else if (name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+				images.add(path);
+			}
+		}
+
+		if (schematic != null) {
+			this.formSchematic = schematic;
+			this.formStatus = schematic.getFileName() + " selected.";
+			this.parseSchematicStats(schematic);
+		}
+
+		if (!images.isEmpty()) {
+			List<Path> combined = new ArrayList<>(this.formPictures);
+			combined.addAll(images);
+			this.applyPictures(combined);
+		}
+
+		if (schematic == null && images.isEmpty()) {
+			this.formStatus = "Drop a .litematic file or PNG/JPG images.";
+		}
+	}
+
+	private boolean anyFormFieldFocused() {
+		return (this.titleBox != null && this.titleBox.isFocused())
+				|| (this.thumbnailBox != null && this.thumbnailBox.isFocused())
+				|| (this.designerBox != null && this.designerBox.isFocused())
+				|| (this.descriptionBox != null && this.descriptionBox.isFocused())
+				|| (this.codeBox != null && this.codeBox.isFocused());
+	}
+
+	private void pasteFromClipboard() {
+		if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) {
+			this.formStatus = "Clipboard paste is not supported on macOS.";
+			return;
+		}
+
+		this.formStatus = "Reading clipboard...";
+
+		Thread worker = new Thread(() -> {
+			Path pastedImage = null;
+			String pastedUrl = null;
+
+			try {
+				System.setProperty("java.awt.headless", "false");
+				java.awt.datatransfer.Clipboard clipboard = java.awt.Toolkit.getDefaultToolkit().getSystemClipboard();
+				java.awt.datatransfer.Transferable contents = clipboard.getContents(null);
+
+				if (contents != null && contents.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.imageFlavor)) {
+					java.awt.Image image = (java.awt.Image) contents.getTransferData(java.awt.datatransfer.DataFlavor.imageFlavor);
+					pastedImage = this.writePastedPng(toBufferedImage(image));
+				} else if (contents != null && contents.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.stringFlavor)) {
+					String text = ((String) contents.getTransferData(java.awt.datatransfer.DataFlavor.stringFlavor)).trim();
+
+					if (text.startsWith("http://") || text.startsWith("https://")) {
+						pastedUrl = text.split("\\s+")[0];
+					}
+				} else if (contents != null) {
+					StringBuilder flavors = new StringBuilder();
+
+					for (java.awt.datatransfer.DataFlavor flavor : contents.getTransferDataFlavors()) {
+						flavors.append(flavor.getMimeType()).append(" | ");
+					}
+
+					SchematicIndexMod.LOGGER.warn("Clipboard had no image/text. Flavors: {}", flavors);
+				}
+			} catch (Throwable e) {
+				SchematicIndexMod.LOGGER.warn("Clipboard read failed", e);
+			}
+
+			Path downloaded = null;
+			boolean downloadedSchematic = false;
+			boolean unsupportedLink = false;
+
+			if (pastedUrl != null) {
+				String extension = urlExtension(pastedUrl);
+				boolean isSchematic = extension.equals("litematic");
+				boolean isImage = extension.equals("png") || extension.equals("jpg") || extension.equals("jpeg");
+
+				if (isSchematic || isImage) {
+					try {
+						Path target = this.pastedFile(isSchematic ? "litematic" : extension);
+
+						if (Backend.download(pastedUrl, target)) {
+							downloaded = target;
+							downloadedSchematic = isSchematic;
+						}
+					} catch (Throwable e) {
+						SchematicIndexMod.LOGGER.warn("Clipboard link download failed", e);
+					}
+				} else {
+					unsupportedLink = true;
+				}
+			}
+
+			Path image = pastedImage;
+			Path file = downloaded;
+			boolean asSchematic = downloadedSchematic;
+			boolean hadUrl = pastedUrl != null;
+			boolean badType = unsupportedLink;
+			Minecraft.getInstance().execute(() -> {
+				if (image != null) {
+					this.addFormPicture(image);
+					this.formStatus = "Pasted image added.";
+				} else if (file != null && asSchematic) {
+					this.formSchematic = file;
+					this.formStatus = file.getFileName() + " selected.";
+					this.parseSchematicStats(file);
+				} else if (file != null) {
+					this.addFormPicture(file);
+					this.formStatus = "Downloaded image added.";
+				} else if (badType) {
+					this.formStatus = "That link isn't a .litematic or image.";
+				} else if (hadUrl) {
+					this.formStatus = "Could not fetch that link - Discord links expire, copy a fresh one.";
+				} else {
+					this.formStatus = "No image or link on the clipboard.";
+				}
+			});
+		}, "schematicindex-paste");
+		worker.setDaemon(true);
+		worker.start();
+	}
+
+	private void addFormPicture(Path path) {
+		List<Path> combined = new ArrayList<>(this.formPictures);
+		combined.add(path);
+		this.applyPictures(combined);
+	}
+
+	private Path writePastedPng(java.awt.image.BufferedImage image) throws java.io.IOException {
+		Path file = this.pastedFile("png");
+		javax.imageio.ImageIO.write(image, "png", file.toFile());
+		return file;
+	}
+
+	private Path pastedFile(String extension) throws java.io.IOException {
+		Path dir = net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir()
+				.resolve(SchematicIndexMod.MOD_ID).resolve("pasted");
+		Files.createDirectories(dir);
+		return dir.resolve("paste-" + System.currentTimeMillis() + "." + extension);
+	}
+
+	private static String urlExtension(String url) {
+		String path = url.split("[?#]")[0];
+		int dot = path.lastIndexOf('.');
+		int slash = path.lastIndexOf('/');
+		return dot > slash && dot >= 0 ? path.substring(dot + 1).toLowerCase(Locale.ROOT) : "";
+	}
+
+	private static java.awt.image.BufferedImage toBufferedImage(java.awt.Image image) {
+		if (image instanceof java.awt.image.BufferedImage buffered) {
+			return buffered;
+		}
+
+		int width = Math.max(1, image.getWidth(null));
+		int height = Math.max(1, image.getHeight(null));
+		java.awt.image.BufferedImage buffered = new java.awt.image.BufferedImage(width, height,
+				java.awt.image.BufferedImage.TYPE_INT_ARGB);
+		java.awt.Graphics2D graphics = buffered.createGraphics();
+		graphics.drawImage(image, 0, 0, null);
+		graphics.dispose();
+		return buffered;
+	}
+
+	@Override
 	public boolean keyPressed(KeyEvent event) {
+		if (this.errorOpen) {
+			if (event.key() == 256) {
+				this.errorOpen = false;
+			}
+
+			return true;
+		}
+
+		if (this.nameInputOpen) {
+			switch (event.key()) {
+				case 259 -> {
+					if (!this.nameInput.isEmpty()) {
+						this.nameInput = this.nameInput.substring(0, this.nameInput.length() - 1);
+					}
+				}
+				case 257, 335 -> this.confirmNameInput();
+				case 256 -> {
+					this.nameInputOpen = false;
+					this.namePendingPost = null;
+				}
+				default -> {
+				}
+			}
+
+			return true;
+		}
+
 		if (this.tosOpen) {
 			if (event.key() == 256 && this.tosScrolledBottom) {
 				Settings.revokeTerms();
@@ -4146,6 +5308,11 @@ public class IndexScreen extends Screen {
 		}
 
 		if (event.key() == 256 && this.detail != null) {
+			if (this.collectionMenuOpen) {
+				this.collectionMenuOpen = false;
+				return true;
+			}
+
 			if (this.pendingOverwrite != null) {
 				this.pendingOverwrite = null;
 				this.status = "";
@@ -4162,11 +5329,33 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
+		if (event.key() == 298 && net.fabricmc.loader.api.FabricLoader.getInstance().isDevelopmentEnvironment()) {
+			this.showError("SI-TEST99");
+			return true;
+		}
+
+		if (this.page == Page.UPLOAD && this.uploadFormOpen && event.key() == 86
+				&& (event.modifiers() & 0x2) != 0 && !this.anyFormFieldFocused()) {
+			this.pasteFromClipboard();
+			return true;
+		}
+
+		if (this.gridPage() && this.detail == null && !this.errorOpen && !this.tosOpen
+				&& !this.tutorialActive && !this.designerWarnOpen && !this.searchBox.isFocused()
+				&& this.handleGridKey(event.key())) {
+			return true;
+		}
+
 		return super.keyPressed(event);
 	}
 
 	@Override
 	public void onClose() {
+		sessionSort = this.sort;
+		sessionCategory = this.category;
+		sessionScroll = this.scroll;
+		sessionShown = this.shownCount;
+
 		ImageStore.releaseAll();
 		SchematicPreview.releaseAll();
 

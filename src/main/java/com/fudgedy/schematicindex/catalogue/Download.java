@@ -133,7 +133,7 @@ public final class Download {
 		}
 	}
 
-	private static String safeName(String fileName) {
+	public static String safeName(String fileName) {
 		String cleaned = fileName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
 
 		if (cleaned.isBlank()) {
