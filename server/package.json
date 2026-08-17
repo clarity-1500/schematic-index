@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node --experimental-sqlite src/index.js",
     "dev": "node --watch --experimental-sqlite src/index.js",
-    "seed": "node --experimental-sqlite scripts/seed.js"
+    "seed": "node --experimental-sqlite scripts/seed.js",
+    "bulk": "node scripts/bulk-upload.js"
   },
   "engines": {
     "node": ">=22"

@@ -2,3 +2,7 @@ node_modules/
 data/
 .env
 *.log
+
+# bulk-upload working folder (your upload code + schematics live here)
+scripts/bulk/*
+!scripts/bulk/defaults.json.example
