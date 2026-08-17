@@ -427,6 +427,42 @@ export function registerAdminRoutes(app) {
     res.json({ ok: true });
   });
 
+  const SEED_CATEGORIES = ['FARMS', 'CONTRAPTIONS', 'REGEARS', 'STASHES', 'GAMBLING_BASES', 'HANGOUT_BASES', 'MEGA_BUILDS'];
+
+  app.post('/admin/api/seed-test', owner, (req, res) => {
+    const count = Math.min(500, Math.max(1, Number(req.body?.count) || 60));
+    const now = Date.now();
+    const insert = db.prepare(`
+      INSERT INTO posts
+        (id, title, thumbnail_name, poster, designer, category, size_x, size_y, size_z, block_count,
+         downloads, likes, posted_at, description, thumbnail_key, file_key, file_hash, file_size,
+         visibility, uploader_code_id, created_token, created_ip, report_count)
+      VALUES (?, ?, NULL, 'TestBot', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, 'visible', NULL, NULL, NULL, 0)
+    `);
+
+    const seed = db.transaction((n) => {
+      for (let i = 0; i < n; i++) {
+        const id = 'test_' + crypto.randomBytes(6).toString('hex');
+        const cat = SEED_CATEGORIES[i % SEED_CATEGORIES.length];
+        const sx = 5 + (i % 40);
+        const sy = 4 + (i % 20);
+        const sz = 5 + (i % 30);
+        insert.run(id, `Test Build #${i + 1}`, `Designer ${1 + (i % 9)}`, cat, sx, sy, sz, sx * sy * sz,
+          i % 50, i % 25, now - i * 3_600_000, 'A generated test post for scroll testing.');
+      }
+    });
+
+    seed(count);
+    invalidatePosts();
+    res.json({ ok: true, inserted: count });
+  });
+
+  app.delete('/admin/api/seed-test', owner, (req, res) => {
+    const info = db.prepare("DELETE FROM posts WHERE poster = 'TestBot'").run();
+    invalidatePosts();
+    res.json({ ok: true, deleted: info.changes });
+  });
+
   app.post('/admin/api/partners', owner, iconUpload, (req, res) => {
     const url = String(req.body?.url || '').trim();
     const name = String(req.body?.name || '').trim();

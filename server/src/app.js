@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import { db } from './db.js';
 import { config } from './config.js';
 import { registerReadRoutes } from './read.js';
@@ -9,6 +10,8 @@ import { registerAdminRoutes } from './admin.js';
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', 1);
+  app.use(compression());
   app.use(express.json({ limit: '256kb' }));
 
   app.get('/', (req, res) => {
