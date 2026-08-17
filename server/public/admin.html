@@ -134,10 +134,10 @@
     <section id="tab-codes" class="hide">
       <div class="card">
         <h3 style="margin-top:0">Generate an upload code</h3>
-        <div class="row"><input id="c-name" placeholder="Uploader display name" /><button class="primary" onclick="makeCode()">Generate</button></div>
+        <div class="row" style="gap:8px"><input id="c-name" placeholder="Uploader display name" /><input id="c-ign" placeholder="Minecraft IGN (for avatar)" /><button class="primary" onclick="makeCode()">Generate</button></div>
         <p id="newCode" class="mono hide" style="margin-top:10px"></p>
       </div>
-      <div class="card"><table id="codesTable"><thead><tr><th>Code</th><th>Name</th><th>State</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="card"><table id="codesTable"><thead><tr><th>Code</th><th>Name</th><th>IGN</th><th>State</th><th></th></tr></thead><tbody></tbody></table></div>
     </section>
 
     <section id="tab-content" class="hide">
@@ -584,13 +584,14 @@ async function loadCodes() {
   document.querySelector('#codesTable tbody').innerHTML = codes.map(c => `
     <tr>
       <td class="mono">${esc(c.code)}</td><td>${esc(c.displayName)}</td>
+      <td>${c.ign ? `<span class="row" style="gap:6px; align-items:center"><img src="https://mc-heads.net/avatar/${encodeURIComponent(c.ign)}/20.png" width="20" height="20" style="border-radius:3px" alt="" />${esc(c.ign)}</span>` : '<span class="muted">-</span>'}</td>
       <td><span class="pill ${c.revoked?'warn':'on'}">${c.revoked?'revoked':'active'}</span></td>
       <td style="white-space:nowrap">
         <button class="small" onclick="copyCode(${c.id})">Copy</button>
         <button class="small" onclick="editCode(${c.id})">Edit</button>
         ${c.revoked?'':`<button class="small danger" onclick="revoke(${c.id})">Revoke</button>`}
       </td>
-    </tr>`).join('') || '<tr><td colspan="4" class="muted">None.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">None.</td></tr>';
 }
 async function copyCode(id) {
   const code = codesById[id]?.code; if (!code) return;
@@ -611,15 +612,18 @@ async function editCode(id) {
   if (rawName === null) return;
   const displayName = rawName.trim();
   if (!displayName) { toast('Name required'); return; }
-  const res = await api('/admin/api/codes/'+id+'/update', { method:'POST', body: JSON.stringify({ code, displayName }) });
+  const rawIgn = prompt('Minecraft IGN (for avatar):', c.ign || '');
+  if (rawIgn === null) return;
+  const ign = rawIgn.trim();
+  const res = await api('/admin/api/codes/'+id+'/update', { method:'POST', body: JSON.stringify({ code, displayName, ign }) });
   const j = await res.json().catch(()=>({}));
   if (res.ok) { loadCodes(); toast('Updated'); } else { toast(j.message || 'Update failed'); }
 }
 async function makeCode() {
   const name = v('c-name'); if(!name){ toast('Enter a name'); return; }
-  const res = await api('/admin/api/codes', { method:'POST', body: JSON.stringify({ displayName:name }) });
+  const res = await api('/admin/api/codes', { method:'POST', body: JSON.stringify({ displayName:name, ign:v('c-ign') }) });
   const j = await res.json();
-  if (res.ok) { const e=document.getElementById('newCode'); e.textContent='New code for '+j.displayName+': '+j.code; e.classList.remove('hide'); document.getElementById('c-name').value=''; loadCodes(); }
+  if (res.ok) { const e=document.getElementById('newCode'); e.textContent='New code for '+j.displayName+': '+j.code; e.classList.remove('hide'); document.getElementById('c-name').value=''; document.getElementById('c-ign').value=''; loadCodes(); }
 }
 async function revoke(id) {
   const c = codesById[id]; if (!c) return;

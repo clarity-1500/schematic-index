@@ -236,21 +236,24 @@ export function registerAdminRoutes(app) {
     const rows = db.prepare('SELECT * FROM codes ORDER BY created_at DESC').all();
     res.json({
       codes: rows.map((r) => ({
-        id: r.id, code: r.code, displayName: r.display_name, revoked: !!r.revoked, createdAt: r.created_at,
+        id: r.id, code: r.code, displayName: r.display_name, ign: r.ign || '',
+        revoked: !!r.revoked, createdAt: r.created_at,
       })),
     });
   });
 
   app.post('/admin/api/codes', owner, (req, res) => {
     const displayName = String(req.body?.displayName || '').trim();
+    const ign = String(req.body?.ign || '').trim();
 
     if (!displayName) {
       return res.status(400).json({ error: 'no_name', message: 'A display name is required.' });
     }
 
     const code = crypto.randomBytes(6).toString('hex').toUpperCase();
-    db.prepare('INSERT INTO codes (code, display_name, revoked, created_at) VALUES (?, ?, 0, ?)')
-      .run(code, displayName, Date.now());
+    db.prepare('INSERT INTO codes (code, display_name, ign, revoked, created_at) VALUES (?, ?, ?, 0, ?)')
+      .run(code, displayName, ign, Date.now());
+    invalidatePosts();
     res.status(201).json({ ok: true, code, displayName });
   });
 
@@ -264,6 +267,7 @@ export function registerAdminRoutes(app) {
 
     const newCode = String(req.body?.code ?? row.code).trim().toUpperCase();
     const displayName = String(req.body?.displayName ?? row.display_name).trim();
+    const ign = String(req.body?.ign ?? row.ign ?? '').trim();
 
     if (!/^[A-Z0-9-]+$/.test(newCode)) {
       return res.status(400).json({ error: 'bad_code', message: 'Code must be letters, numbers, or dashes.' });
@@ -279,7 +283,8 @@ export function registerAdminRoutes(app) {
       return res.status(409).json({ error: 'code_taken', message: 'That code is already in use.' });
     }
 
-    db.prepare('UPDATE codes SET code = ?, display_name = ? WHERE id = ?').run(newCode, displayName, id);
+    db.prepare('UPDATE codes SET code = ?, display_name = ?, ign = ? WHERE id = ?').run(newCode, displayName, ign, id);
+    invalidatePosts();
     res.json({ ok: true, code: newCode, displayName });
   });
 

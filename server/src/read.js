@@ -112,8 +112,19 @@ export function registerReadRoutes(app) {
 
   app.get('/creator/:poster', (req, res) => {
     const poster = String(req.params.poster || '');
+    const code = db.prepare('SELECT ign FROM codes WHERE display_name = ? ORDER BY id DESC').get(poster);
     const followers = db.prepare('SELECT COUNT(*) AS n FROM follows WHERE poster = ?').get(poster).n;
-    const posts = db.prepare("SELECT COUNT(*) AS n FROM posts WHERE poster = ? AND visibility = 'visible'").get(poster).n;
-    res.json({ poster, followers, posts });
+    const agg = db.prepare(
+      "SELECT COUNT(*) AS posts, COALESCE(SUM(downloads), 0) AS downloads, COALESCE(SUM(likes), 0) AS likes "
+      + "FROM posts WHERE poster = ? AND visibility = 'visible'",
+    ).get(poster);
+    res.json({
+      poster,
+      ign: code?.ign || '',
+      followers,
+      posts: agg.posts,
+      downloads: agg.downloads,
+      likes: agg.likes,
+    });
   });
 }

@@ -171,4 +171,11 @@ if (!creditColumns.includes('nickname')) {
   db.exec('ALTER TABLE credits ADD COLUMN nickname TEXT');
 }
 
+// Migration: add the Minecraft IGN column to codes (used for the creator's skin avatar).
+const codeColumns = db.prepare("PRAGMA table_info('codes')").all().map((c) => c.name);
+
+if (!codeColumns.includes('ign')) {
+  db.exec('ALTER TABLE codes ADD COLUMN ign TEXT');
+}
+
 console.log(`[db] ready at ${paths.db}`);
