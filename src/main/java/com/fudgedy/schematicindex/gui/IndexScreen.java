@@ -2589,6 +2589,80 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, shortDay(this.myDays[0]), plotX, plotBottom + plotToLabel, Theme.TEXT_ASH);
 		String lastLabel = shortDay(this.myDays[this.myDays.length - 1]);
 		Theme.text(ctx, this.font, lastLabel, plotRight - this.font.width(lastLabel), plotBottom + plotToLabel, Theme.TEXT_ASH);
+
+		if (mouseX >= plotX - 4 && mouseX <= plotRight + 4 && mouseY >= plotY - 6 && mouseY <= plotBottom + 6) {
+			int n = this.myDays.length;
+			int hi = Math.max(0, Math.min(n - 1, (int) Math.round((double) (mouseX - plotX) / plotW * (n - 1))));
+			int hx = plotX + (int) Math.round((double) hi / (n - 1) * plotW);
+
+			ctx.fill(hx, plotY, hx + 1, plotBottom, 0x33FFFFFF);
+
+			List<String> rows = new ArrayList<>();
+			List<Integer> rowColors = new ArrayList<>();
+
+			if (showViews && hi < this.myViewSeries.length) {
+				int py = plotBottom - (int) Math.round((double) this.myViewSeries[hi] / max * plotH * animT);
+				this.graphDot(ctx, hx, py, Theme.ACCENT_BRIGHT);
+				rows.add("Views: " + SchematicEntry.compact(this.myViewSeries[hi]));
+				rowColors.add(Theme.ACCENT_BRIGHT);
+			}
+			if (showDownloads && hi < this.myDownloadSeries.length) {
+				int py = plotBottom - (int) Math.round((double) this.myDownloadSeries[hi] / max * plotH * animT);
+				this.graphDot(ctx, hx, py, Theme.DOWNLOAD_FILL);
+				rows.add("Downloads: " + SchematicEntry.compact(this.myDownloadSeries[hi]));
+				rowColors.add(Theme.DOWNLOAD_FILL);
+			}
+			if (showLikes && hi < this.myLikeSeries.length) {
+				int py = plotBottom - (int) Math.round((double) this.myLikeSeries[hi] / max * plotH * animT);
+				this.graphDot(ctx, hx, py, 0xFFE0B341);
+				rows.add("Likes: " + SchematicEntry.compact(this.myLikeSeries[hi]));
+				rowColors.add(0xFFE0B341);
+			}
+
+			String date = fullDay(this.myDays[hi]);
+			int pad = 6;
+			int rowH = this.font.lineHeight + 2;
+			int textWidth = this.font.width(Theme.bold(date));
+
+			for (String row : rows) {
+				textWidth = Math.max(textWidth, 10 + this.font.width(row));
+			}
+
+			int boxW = textWidth + pad * 2;
+			int boxH = pad + this.font.lineHeight + 4 + rows.size() * rowH + pad - 2;
+			int boxX = hx + 10 + boxW > x + w ? hx - 10 - boxW : hx + 10;
+			boxX = Math.max(x + 2, Math.min(boxX, x + w - boxW - 2));
+			int boxY = Math.max(y + 2, Math.min(mouseY - boxH / 2, y + h - boxH - 2));
+
+			Theme.roundedRect(ctx, boxX, boxY, boxW, boxH, Theme.RADIUS_CARD, Theme.SURFACE_ELEVATED);
+			Theme.roundedOutline(ctx, boxX, boxY, boxW, boxH, Theme.RADIUS_CARD, Theme.HAIRLINE);
+
+			int ty = boxY + pad;
+			Theme.text(ctx, this.font, Theme.bold(date), boxX + pad, ty, Theme.TEXT);
+			ty += this.font.lineHeight + 4;
+
+			for (int i = 0; i < rows.size(); i++) {
+				ctx.fill(boxX + pad, ty + 2, boxX + pad + 4, ty + 6, rowColors.get(i));
+				Theme.text(ctx, this.font, rows.get(i), boxX + pad + 10, ty, Theme.TEXT_MUTE);
+				ty += rowH;
+			}
+		}
+	}
+
+	private void graphDot(GuiGraphics ctx, int centreX, int centreY, int color) {
+		Theme.roundedRect(ctx, centreX - 3, centreY - 3, 6, 6, 3, 0xFFFFFFFF);
+		Theme.roundedRect(ctx, centreX - 2, centreY - 2, 4, 4, 2, color);
+	}
+
+	private static String fullDay(String iso) {
+		try {
+			String[] parts = iso.split("-");
+			String[] months = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+			int month = Math.max(1, Math.min(12, Integer.parseInt(parts[1])));
+			return months[month - 1] + " " + Integer.parseInt(parts[2]) + ", " + parts[0];
+		} catch (Exception e) {
+			return iso;
+		}
 	}
 
 	private int legendChip(GuiGraphics ctx, Rect rect, int x, int y, String label, int color, boolean active, int mouseX, int mouseY) {
@@ -2727,7 +2801,19 @@ public class IndexScreen extends Screen {
 		this.myStatsLoading = true;
 		this.myStatsOk = false;
 		new Thread(() -> {
-			JsonObject data = Backend.myStats(code, 30);
+			// Start the graph at the launch date rather than a rolling 30-day window,
+			// so it doesn't show flat-zero days from before there was any activity.
+			int days;
+
+			try {
+				long span = java.time.temporal.ChronoUnit.DAYS.between(
+						java.time.LocalDate.of(2026, 8, 8), java.time.LocalDate.now()) + 1;
+				days = (int) Math.max(7, Math.min(365, span));
+			} catch (Throwable e) {
+				days = 30;
+			}
+
+			JsonObject data = Backend.myStats(code, days);
 			Minecraft.getInstance().execute(() -> {
 				this.myStatsLoading = false;
 				this.myStatsLoaded = true;
