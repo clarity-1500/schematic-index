@@ -7,6 +7,7 @@ import { db } from './db.js';
 import { config, paths } from './config.js';
 import { invalidatePosts, invalidateContent } from './cache.js';
 import { getCreditsAdmin, getTerms, getLinksAdmin, getPartnersAdmin, getJsonKv, getKv, setKv } from './content.js';
+import { stampLitematic } from './stamp.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const linkIconsDir = path.join(paths.files, 'link');
@@ -481,6 +482,37 @@ export function registerAdminRoutes(app) {
     const info = db.prepare("DELETE FROM posts WHERE poster = 'TestBot'").run();
     invalidatePosts();
     res.json({ ok: true, deleted: info.changes });
+  });
+
+  app.post('/admin/api/stamp-existing', owner, async (req, res) => {
+    const posts = db.prepare("SELECT id, title, file_key FROM posts WHERE file_key IS NOT NULL AND visibility != 'deleted'").all();
+    const updateFile = db.prepare('UPDATE posts SET file_hash = ?, file_size = ? WHERE id = ?');
+    let stamped = 0;
+    let skipped = 0;
+
+    for (const post of posts) {
+      try {
+        const filePath = path.join(paths.files, post.file_key);
+        const buffer = await fs.promises.readFile(filePath);
+        const result = await stampLitematic(buffer, post.title);
+
+        if (result === buffer) {
+          skipped += 1;
+          continue;
+        }
+
+        await fs.promises.writeFile(filePath, result);
+        const hash = 'sha256:' + crypto.createHash('sha256').update(result).digest('hex');
+        updateFile.run(hash, result.length, post.id);
+        stamped += 1;
+      } catch (e) {
+        console.error('[stamp] failed for', post.id, e.message);
+        skipped += 1;
+      }
+    }
+
+    invalidatePosts();
+    res.json({ ok: true, stamped, skipped });
   });
 
   app.post('/admin/api/partners', owner, iconUpload, (req, res) => {

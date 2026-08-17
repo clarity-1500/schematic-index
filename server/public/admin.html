@@ -203,6 +203,12 @@
       </div>
 
       <div class="card">
+        <h3 style="margin-top:0">Stamp existing files</h3>
+        <p class="muted" style="margin-top:0">Re-write every stored .litematic so its metadata author is "The Schematic Index" and its name is the post title. New uploads are stamped automatically; run this once for posts uploaded before.</p>
+        <div class="row" style="gap:8px"><button class="primary" onclick="stampExisting()">Stamp all posts</button><span id="stamp-state" class="muted" style="font-size:12px"></span></div>
+      </div>
+
+      <div class="card">
         <h3 style="margin-top:0">Community Discord</h3>
         <p class="muted" style="margin-top:0">The invite the mod's "Something went wrong" error screen links to for bug reports.</p>
         <div class="row" style="gap:8px"><input id="dc-url" placeholder="https://discord.gg/..." style="flex:1" /><button class="primary" onclick="saveDiscord()">Save</button></div>
@@ -420,6 +426,13 @@ async function clearTest() {
   const j = await res.json();
   document.getElementById('seed-state').textContent = 'Deleted ' + (j.deleted || 0);
   toast('Deleted ' + (j.deleted || 0) + ' posts');
+}
+async function stampExisting() {
+  document.getElementById('stamp-state').textContent = 'Stamping...';
+  const res = await api('/admin/api/stamp-existing', { method:'POST' });
+  const j = await res.json();
+  document.getElementById('stamp-state').textContent = 'Stamped ' + (j.stamped || 0) + ', skipped ' + (j.skipped || 0);
+  toast('Stamped ' + (j.stamped || 0) + ' files');
 }
 
 let allPosts = [];

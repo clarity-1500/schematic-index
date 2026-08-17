@@ -7,6 +7,7 @@ import { db } from './db.js';
 import { paths, fileUrl } from './config.js';
 import { serializePost } from './serialize.js';
 import { invalidatePosts } from './cache.js';
+import { stampLitematic } from './stamp.js';
 
 const CATEGORIES = new Set([
   'FARMS', 'CONTRAPTIONS', 'REGEARS', 'STASHES', 'GAMBLING_BASES', 'HANGOUT_BASES', 'MEGA_BUILDS',
@@ -180,11 +181,13 @@ export function registerUploadRoutes(app) {
       const id = crypto.randomBytes(8).toString('hex');
       const fileKey = `sch/${id}.litematic`;
 
-      const buffer = await fs.promises.readFile(schematic.path);
-      const fileHash = 'sha256:' + crypto.createHash('sha256').update(buffer).digest('hex');
-      const dims = await readLitematic(buffer);
+      const original = await fs.promises.readFile(schematic.path);
+      const dims = await readLitematic(original);
+      const stamped = await stampLitematic(original, title);
+      const fileHash = 'sha256:' + crypto.createHash('sha256').update(stamped).digest('hex');
 
-      await fs.promises.rename(schematic.path, path.join(paths.files, fileKey));
+      await fs.promises.writeFile(path.join(paths.files, fileKey), stamped);
+      await fs.promises.unlink(schematic.path).catch(() => {});
 
       const imageKeys = [];
       for (let i = 0; i < images.length; i++) {
@@ -197,7 +200,7 @@ export function registerUploadRoutes(app) {
         id, title, String(meta.thumbnailName || '').trim() || null, req.uploaderCode.display_name,
         String(meta.designer || '').trim() || null, category, dims.x, dims.y, dims.z, dims.blocks,
         Date.now(), String(meta.description || '').trim() || null, imageKeys[0], fileKey, fileHash,
-        schematic.size, req.uploaderCode.id, (req.get('X-Device-Token') || '').trim() || null,
+        stamped.length, req.uploaderCode.id, (req.get('X-Device-Token') || '').trim() || null,
         req.ip || null,
       );
 
