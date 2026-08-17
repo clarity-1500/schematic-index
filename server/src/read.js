@@ -109,4 +109,11 @@ export function registerReadRoutes(app) {
     const content = cached('content:all', CONTENT_TTL_MS, () => buildContent());
     res.json(content);
   });
+
+  app.get('/creator/:poster', (req, res) => {
+    const poster = String(req.params.poster || '');
+    const followers = db.prepare('SELECT COUNT(*) AS n FROM follows WHERE poster = ?').get(poster).n;
+    const posts = db.prepare("SELECT COUNT(*) AS n FROM posts WHERE poster = ? AND visibility = 'visible'").get(poster).n;
+    res.json({ poster, followers, posts });
+  });
 }
