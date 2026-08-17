@@ -1,21 +1,43 @@
 import { db } from './db.js';
 import { fileUrl } from './config.js';
+import { getJsonKv } from './content.js';
 
 const imagesStmt = db.prepare('SELECT file_key FROM post_images WHERE post_id = ? ORDER BY position');
 const likedStmt = db.prepare('SELECT 1 FROM likes WHERE post_id = ? AND token = ?');
 
 // Trending = a recent surge, not lifetime popularity: only activity in the last
 // window counts, so an old post with old likes scores 0 while a fresh burst ranks high.
-const TREND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// The window and weights are admin-tunable via the 'trending' content key.
 const recentDownloadsStmt = db.prepare('SELECT COUNT(*) n FROM downloads WHERE post_id = ? AND day >= ?');
 const recentLikesStmt = db.prepare('SELECT COUNT(*) n FROM likes WHERE post_id = ? AND created_at >= ?');
 
+let trendCfg = null;
+let trendCfgAt = 0;
+
+function trendingConfig() {
+  const now = Date.now();
+
+  if (!trendCfg || now - trendCfgAt > 15_000) {
+    const c = getJsonKv('trending', {}) || {};
+    const windowDays = Number(c.windowDays) > 0 ? Number(c.windowDays) : 7;
+    trendCfg = {
+      windowMs: windowDays * 86_400_000,
+      likeWeight: Number.isFinite(Number(c.likeWeight)) ? Number(c.likeWeight) : 2,
+      downloadWeight: Number.isFinite(Number(c.downloadWeight)) ? Number(c.downloadWeight) : 1,
+    };
+    trendCfgAt = now;
+  }
+
+  return trendCfg;
+}
+
 function trendScore(postId) {
-  const since = Date.now() - TREND_WINDOW_MS;
+  const cfg = trendingConfig();
+  const since = Date.now() - cfg.windowMs;
   const sinceDay = new Date(since).toISOString().slice(0, 10);
   const downloads = recentDownloadsStmt.get(postId, sinceDay).n;
   const likes = recentLikesStmt.get(postId, since).n;
-  return downloads + likes * 2;
+  return downloads * cfg.downloadWeight + likes * cfg.likeWeight;
 }
 
 export function isLiked(postId, token) {

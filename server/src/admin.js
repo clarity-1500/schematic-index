@@ -306,7 +306,22 @@ export function registerAdminRoutes(app) {
       links: getLinksAdmin(),
       partners: getPartnersAdmin(),
       discord: getKv('discord') || '',
+      trending: getJsonKv('trending', { windowDays: 7, likeWeight: 2, downloadWeight: 1 }),
     });
+  });
+
+  app.put('/admin/api/trending', owner, (req, res) => {
+    const windowDays = Math.min(90, Math.max(1, Number(req.body?.windowDays) || 7));
+    const likeWeight = Math.max(0, Number(req.body?.likeWeight));
+    const downloadWeight = Math.max(0, Number(req.body?.downloadWeight));
+    setKv('trending', JSON.stringify({
+      windowDays,
+      likeWeight: Number.isFinite(likeWeight) ? likeWeight : 2,
+      downloadWeight: Number.isFinite(downloadWeight) ? downloadWeight : 1,
+    }));
+    invalidateContent();
+    invalidatePosts();
+    res.json({ ok: true });
   });
 
   app.post('/admin/api/credits', owner, (req, res) => {

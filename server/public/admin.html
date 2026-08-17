@@ -106,7 +106,25 @@
     </section>
 
     <section id="tab-posts" class="hide">
-      <div class="card"><table id="postsTable"><thead><tr><th>Title</th><th>Poster</th><th>Cat</th><th>Likes</th><th>DLs</th><th>Reports</th><th>State</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="card">
+        <div class="row" style="gap:8px; margin-bottom:10px; flex-wrap:wrap">
+          <input id="p-search" placeholder="Search title / poster" oninput="renderPosts()" style="flex:1; min-width:180px" />
+          <select id="p-cat" onchange="renderPosts()">
+            <option value="">All categories</option>
+            <option>FARMS</option><option>CONTRAPTIONS</option><option>REGEARS</option><option>STASHES</option>
+            <option>GAMBLING_BASES</option><option>HANGOUT_BASES</option><option>MEGA_BUILDS</option>
+          </select>
+          <select id="p-state" onchange="renderPosts()">
+            <option value="">Any state</option><option value="visible">Visible</option><option value="deleted">Deleted</option>
+          </select>
+          <button class="small danger" onclick="delSelected()">Delete selected</button>
+        </div>
+        <table id="postsTable"><thead><tr><th><input type="checkbox" id="p-all" onclick="toggleAll(this)" style="width:auto" /></th><th>Title</th><th>Poster</th><th>Cat</th><th>Likes</th><th>DLs</th><th>Reports</th><th>State</th><th></th></tr></thead><tbody></tbody></table>
+        <div class="row" style="justify-content:space-between; margin-top:10px">
+          <span id="p-count" class="muted" style="font-size:12px"></span>
+          <div class="row" style="gap:6px"><button class="small" onclick="pPage(-1)">Prev</button><span id="p-page" class="muted" style="font-size:12px"></span><button class="small" onclick="pPage(1)">Next</button></div>
+        </div>
+      </div>
     </section>
 
     <section id="tab-reports" class="hide">
@@ -165,6 +183,17 @@
         <div style="max-width:160px"><label>Version</label><input id="tm-version" placeholder="auto +1" /></div>
         <label>Body</label><textarea id="tm-body" style="min-height:180px"></textarea>
         <div style="margin-top:12px"><button class="primary" onclick="saveTerms()">Save terms</button></div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Trending sort</h3>
+        <p class="muted" style="margin-top:0">How the Trending sort scores posts. Only activity within the window counts (a recent surge, not lifetime totals).</p>
+        <div class="grid2">
+          <div><label>Window (days)</label><input id="tr-window" type="number" value="7" /></div>
+          <div><label>Like weight</label><input id="tr-like" type="number" step="0.5" value="2" /></div>
+        </div>
+        <div style="max-width:200px"><label>Download weight</label><input id="tr-dl" type="number" step="0.5" value="1" /></div>
+        <div style="margin-top:12px"><button class="primary" onclick="saveTrending()">Save trending</button></div>
       </div>
 
       <div class="card">
@@ -295,6 +324,10 @@ async function loadContent() {
 
   document.getElementById('dc-url').value = c.discord ?? '';
 
+  document.getElementById('tr-window').value = c.trending?.windowDays ?? 7;
+  document.getElementById('tr-like').value = c.trending?.likeWeight ?? 2;
+  document.getElementById('tr-dl').value = c.trending?.downloadWeight ?? 1;
+
   document.getElementById('tm-version').value = c.terms?.version ?? '';
   document.getElementById('tm-body').value = c.terms?.body ?? '';
 
@@ -369,6 +402,11 @@ async function saveDiscord() {
   await api('/admin/api/discord', { method:'PUT', body: JSON.stringify({ url: v('dc-url') }) });
   toast('Discord saved');
 }
+async function saveTrending() {
+  const body = { windowDays: Number(v('tr-window')), likeWeight: Number(v('tr-like')), downloadWeight: Number(v('tr-dl')) };
+  await api('/admin/api/trending', { method:'PUT', body: JSON.stringify(body) });
+  toast('Trending saved');
+}
 async function seedTest() {
   const count = Number(document.getElementById('seed-count').value) || 80;
   const res = await api('/admin/api/seed-test', { method:'POST', body: JSON.stringify({ count }) });
@@ -384,10 +422,33 @@ async function clearTest() {
   toast('Deleted ' + (j.deleted || 0) + ' posts');
 }
 
+let allPosts = [];
+let postsPage = 0;
+const POSTS_PER_PAGE = 50;
+
 async function loadPosts() {
   const { posts } = await (await api('/admin/api/posts')).json();
-  document.querySelector('#postsTable tbody').innerHTML = posts.map(p => `
+  allPosts = posts;
+  postsPage = 0;
+  renderPosts();
+}
+function filteredPosts() {
+  const q = (document.getElementById('p-search').value || '').toLowerCase();
+  const cat = document.getElementById('p-cat').value;
+  const state = document.getElementById('p-state').value;
+  return allPosts.filter(p =>
+    (!q || (p.title + ' ' + p.poster).toLowerCase().includes(q)) &&
+    (!cat || p.category === cat) &&
+    (!state || p.visibility === state));
+}
+function renderPosts() {
+  const rows = filteredPosts();
+  const pages = Math.max(1, Math.ceil(rows.length / POSTS_PER_PAGE));
+  if (postsPage >= pages) postsPage = pages - 1;
+  const slice = rows.slice(postsPage * POSTS_PER_PAGE, (postsPage + 1) * POSTS_PER_PAGE);
+  document.querySelector('#postsTable tbody').innerHTML = slice.map(p => `
     <tr>
+      <td><input type="checkbox" class="p-pick" value="${p.id}" style="width:auto" /></td>
       <td>${esc(p.title)}</td><td>${esc(p.poster)}</td><td>${esc(p.category)}</td>
       <td>${p.likes}</td><td>${p.downloads}</td>
       <td>${p.reportCount ? '<span class="pill warn">'+p.reportCount+'</span>' : '0'}</td>
@@ -398,7 +459,20 @@ async function loadPosts() {
           ? `<button class="small danger" onclick="delPost('${p.id}')">Delete</button>`
           : `<button class="small" onclick="restorePost('${p.id}')">Restore</button>`}
       </td>
-    </tr>`).join('') || '<tr><td colspan="8" class="muted">No posts.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="9" class="muted">No posts.</td></tr>';
+  document.getElementById('p-count').textContent = rows.length + ' posts';
+  document.getElementById('p-page').textContent = (postsPage + 1) + ' / ' + pages;
+  document.getElementById('p-all').checked = false;
+}
+function pPage(d) { postsPage += d; if (postsPage < 0) postsPage = 0; renderPosts(); }
+function toggleAll(box) { document.querySelectorAll('.p-pick').forEach(c => c.checked = box.checked); }
+async function delSelected() {
+  const ids = [...document.querySelectorAll('.p-pick:checked')].map(c => c.value);
+  if (!ids.length) return toast('Nothing selected');
+  if (!confirm('Delete ' + ids.length + ' posts?')) return;
+  for (const id of ids) await api('/admin/api/posts/' + id, { method:'DELETE' });
+  toast('Deleted ' + ids.length);
+  loadPosts();
 }
 
 const DATASET_COLORS = { Views:'#3fa87f', Downloads:'#6fd9ae', Likes:'#e0b341', Follows:'#7aa2ff' };
