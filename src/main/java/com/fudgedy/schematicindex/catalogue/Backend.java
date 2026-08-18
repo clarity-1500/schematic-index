@@ -253,8 +253,8 @@ public final class Backend {
 		return body != null ? str(body, "displayName") : null;
 	}
 
-	// Shares a collection's posts and returns a short code others can load.
-	public static @Nullable String shareCollection(List<String> postIds) {
+	// Shares a collection (name + posts) and returns a short code others can load.
+	public static @Nullable String shareCollection(String name, List<String> postIds) {
 		if (!configured()) {
 			return null;
 		}
@@ -266,26 +266,21 @@ public final class Backend {
 		}
 
 		JsonObject body = new JsonObject();
+		body.addProperty("name", name);
 		body.add("postIds", ids);
 		JsonObject result = postJsonForResult("/collections/share", body.toString());
 		return result != null && result.has("code") ? result.get("code").getAsString() : null;
 	}
 
-	// Resolves a shared collection code to its list of post ids.
-	public static @Nullable List<String> loadCollectionCode(String code) {
+	// Resolves a shared collection code to its { name, postIds }, or null if unknown.
+	public static @Nullable JsonObject loadCollectionCode(String code) {
 		JsonObject data = getJson("/collections/" + encode(code));
 
 		if (data == null || !data.has("postIds") || !data.get("postIds").isJsonArray()) {
 			return null;
 		}
 
-		List<String> ids = new ArrayList<>();
-
-		for (JsonElement element : data.getAsJsonArray("postIds")) {
-			ids.add(element.getAsString());
-		}
-
-		return ids;
+		return data;
 	}
 
 	// Recent follows and likes for the signed-in uploader (newest first).

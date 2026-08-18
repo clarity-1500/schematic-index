@@ -380,12 +380,28 @@ async function saveTerms() {
   const res = await api('/admin/api/terms', { method:'PUT', body: JSON.stringify(body) });
   if (res.ok) { toast('Terms saved'); loadContent(); } else toast('Body required');
 }
+// The mod's image loader can't read WebP, so convert anything that isn't PNG/JPG to PNG here.
+async function iconAsPng(file) {
+  if (!file || file.type === 'image/png' || file.type === 'image/jpeg') return file || null;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    return new File([blob], 'icon.png', { type: 'image/png' });
+  } catch {
+    return file;
+  }
+}
 async function addLink() {
   const iconInput = document.getElementById('ln-icon');
   const fd = new FormData();
   fd.append('url', v('ln-url'));
   fd.append('label', v('ln-label'));
-  if (iconInput.files[0]) fd.append('icon', iconInput.files[0]);
+  const icon = await iconAsPng(iconInput.files[0]);
+  if (icon) fd.append('icon', icon);
   const res = await fetch('/admin/api/links', { method:'POST', headers:{ 'X-Owner-Key': KEY }, body: fd });
   if (res.status === 403) { logout(); return; }
   if (res.ok) { toast('Link added'); ['ln-url','ln-label','ln-icon'].forEach(id=>document.getElementById(id).value=''); loadContent(); }
@@ -397,7 +413,8 @@ async function addPartner() {
   const fd = new FormData();
   fd.append('url', v('pt-url'));
   fd.append('name', v('pt-name'));
-  if (iconInput.files[0]) fd.append('icon', iconInput.files[0]);
+  const icon = await iconAsPng(iconInput.files[0]);
+  if (icon) fd.append('icon', icon);
   const res = await fetch('/admin/api/partners', { method:'POST', headers:{ 'X-Owner-Key': KEY }, body: fd });
   if (res.status === 403) { logout(); return; }
   if (res.ok) { toast('Partner added'); ['pt-url','pt-name','pt-icon'].forEach(id=>document.getElementById(id).value=''); loadContent(); }

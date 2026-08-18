@@ -408,6 +408,7 @@ public class IndexScreen extends Screen {
 	private final Rect generateCodeChip = new Rect();
 	private @Nullable String sharedCode;   // generated share code for the active collection
 	private boolean sharingCode;
+	private long codeCopiedAt;             // shows "Copied!" on the chip briefly after copying
 
 	// Modal for entering a shared collection code.
 	private boolean loadCodeOpen;
@@ -805,7 +806,7 @@ public class IndexScreen extends Screen {
 
 	private String generateCodeLabel() {
 		if (this.sharedCode != null) {
-			return this.sharedCode;
+			return System.currentTimeMillis() - this.codeCopiedAt < 1400L ? "Copied!" : this.sharedCode;
 		}
 
 		return this.sharingCode ? "..." : "Generate code";
@@ -2829,7 +2830,8 @@ public class IndexScreen extends Screen {
 		if (this.activeCollection != null && this.generateCodeChip.contains(mouseX, mouseY)) {
 			if (this.sharedCode != null) {
 				this.copyToClipboard(this.sharedCode);
-				this.status = "Copied " + this.sharedCode + " to your clipboard.";
+				this.codeCopiedAt = System.currentTimeMillis();
+				this.layoutChips();
 				Theme.click(1.2F);
 			} else if (!this.sharingCode) {
 				this.generateShareCode();
@@ -2858,6 +2860,25 @@ public class IndexScreen extends Screen {
 		}
 	}
 
+	// Pastes clipboard text into the code field, keeping only the first five letters/digits.
+	private void pasteLoadCode() {
+		String clip;
+
+		try {
+			clip = Minecraft.getInstance().keyboardHandler.getClipboard();
+		} catch (Throwable e) {
+			return;
+		}
+
+		for (int i = 0; i < clip.length() && this.loadCodeInput.length() < 5; i++) {
+			char c = clip.charAt(i);
+
+			if (Character.isLetterOrDigit(c)) {
+				this.loadCodeInput += Character.toUpperCase(c);
+			}
+		}
+	}
+
 	private void generateShareCode() {
 		String collection = this.activeCollection;
 
@@ -2876,7 +2897,7 @@ public class IndexScreen extends Screen {
 		Theme.click(1.1F);
 
 		Thread worker = new Thread(() -> {
-			String code = Backend.shareCollection(ids);
+			String code = Backend.shareCollection(collection, ids);
 			Minecraft.getInstance().execute(() -> {
 				this.sharingCode = false;
 
@@ -2903,14 +2924,33 @@ public class IndexScreen extends Screen {
 		this.loadCodeStatus = "Loading...";
 
 		Thread worker = new Thread(() -> {
-			List<String> ids = Backend.loadCollectionCode(code);
+			com.google.gson.JsonObject data = Backend.loadCollectionCode(code);
 			Minecraft.getInstance().execute(() -> {
-				if (ids == null || ids.isEmpty()) {
-					this.loadCodeStatus = ids == null ? "Unknown code." : "That collection is empty.";
+				if (data == null) {
+					this.loadCodeStatus = "Unknown code.";
 					return;
 				}
 
-				String name = "Shared " + code;
+				List<String> ids = new ArrayList<>();
+
+				for (com.google.gson.JsonElement element : data.getAsJsonArray("postIds")) {
+					ids.add(element.getAsString());
+				}
+
+				if (ids.isEmpty()) {
+					this.loadCodeStatus = "That collection is empty.";
+					return;
+				}
+
+				// Keep the collection's original name; disambiguate if the name already exists.
+				String original = data.has("name") && !data.get("name").isJsonNull()
+						? data.get("name").getAsString().trim() : "";
+				String name = original.isEmpty() ? "Shared " + code : original;
+
+				if (CollectionStore.names().contains(name)) {
+					name = name + " (" + code + ")";
+				}
+
 				CollectionStore.create(name);
 
 				for (String id : ids) {
@@ -7436,6 +7476,11 @@ public class IndexScreen extends Screen {
 		}
 
 		if (this.loadCodeOpen) {
+			if (event.key() == 86 && (event.modifiers() & 0x2) != 0) {
+				this.pasteLoadCode();
+				return true;
+			}
+
 			switch (event.key()) {
 				case 259 -> {
 					if (!this.loadCodeInput.isEmpty()) {

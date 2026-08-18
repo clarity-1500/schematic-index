@@ -190,12 +190,20 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_stars_post ON stars(post_id);
   CREATE INDEX IF NOT EXISTS idx_stars_created ON stars(created_at);
 
-  -- Shared collections: a short code maps to a JSON list of post ids.
+  -- Shared collections: a short code maps to a name + JSON list of post ids.
   CREATE TABLE IF NOT EXISTS collection_codes (
     code       TEXT PRIMARY KEY,
+    name       TEXT,
     post_ids   TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
 `);
+
+// Migration: add the name column to collection_codes tables made before it existed.
+const collectionCodeColumns = db.prepare("PRAGMA table_info('collection_codes')").all().map((c) => c.name);
+
+if (!collectionCodeColumns.includes('name')) {
+  db.exec('ALTER TABLE collection_codes ADD COLUMN name TEXT');
+}
 
 console.log(`[db] ready at ${paths.db}`);

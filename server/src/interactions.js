@@ -15,8 +15,8 @@ function newCode() {
 }
 
 const visibleForShare = db.prepare("SELECT 1 FROM posts WHERE id = ? AND visibility = 'visible'");
-const insertCollectionCode = db.prepare('INSERT INTO collection_codes (code, post_ids, created_at) VALUES (?, ?, ?)');
-const getCollectionCode = db.prepare('SELECT post_ids FROM collection_codes WHERE code = ?');
+const insertCollectionCode = db.prepare('INSERT INTO collection_codes (code, name, post_ids, created_at) VALUES (?, ?, ?, ?)');
+const getCollectionCode = db.prepare('SELECT name, post_ids FROM collection_codes WHERE code = ?');
 
 const visiblePost = db.prepare("SELECT * FROM posts WHERE id = ? AND visibility = 'visible'");
 const likeCount = db.prepare('SELECT likes FROM posts WHERE id = ?');
@@ -166,6 +166,7 @@ export function registerInteractionRoutes(app) {
   app.post('/collections/share', shareLimit, (req, res) => {
     const raw = Array.isArray(req.body?.postIds) ? req.body.postIds.map(String) : [];
     const valid = [...new Set(raw)].filter((id) => id && visibleForShare.get(id)).slice(0, 200);
+    const name = String(req.body?.name || '').trim().slice(0, 40) || null;
 
     if (!valid.length) {
       return res.status(400).json({ error: 'empty', message: 'None of those posts are available to share.' });
@@ -175,7 +176,7 @@ export function registerInteractionRoutes(app) {
       const code = newCode();
 
       try {
-        insertCollectionCode.run(code, JSON.stringify(valid), Date.now());
+        insertCollectionCode.run(code, name, JSON.stringify(valid), Date.now());
         return res.json({ code });
       } catch {
         // Code collision - try another.
@@ -199,7 +200,7 @@ export function registerInteractionRoutes(app) {
       postIds = [];
     }
 
-    res.json({ postIds });
+    res.json({ name: row.name || '', postIds });
   });
 
   app.post('/report', reportLimit, (req, res) => {
