@@ -127,7 +127,8 @@ export function registerUploadRoutes(app) {
     fill(series.downloads, db.prepare("SELECT day, COUNT(*) n FROM downloads WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(since, codeId));
     fill(series.views, db.prepare("SELECT day, COUNT(*) n FROM views WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(since, codeId));
     fill(series.likes, db.prepare("SELECT date(created_at/1000,'unixepoch') day, COUNT(*) n FROM likes WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(sinceMs, codeId));
-    fill(series.stars, db.prepare("SELECT date(created_at/1000,'unixepoch') day, COUNT(*) n FROM stars WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(sinceMs, codeId));
+    // Stars series is the total stars given per day (sum of ratings), not the count of raters.
+    fill(series.stars, db.prepare("SELECT date(created_at/1000,'unixepoch') day, CAST(ROUND(SUM(value)/2.0) AS INTEGER) n FROM stars WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(sinceMs, codeId));
 
     // Per-post daily series so clicking a post on the dashboard can graph just that post.
     const postSeries = {};
@@ -150,7 +151,7 @@ export function registerUploadRoutes(app) {
       fillPost('downloads', db.prepare("SELECT post_id, day, COUNT(*) n FROM downloads WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(since, codeId));
       fillPost('views', db.prepare("SELECT post_id, day, COUNT(*) n FROM views WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(since, codeId));
       fillPost('likes', db.prepare("SELECT post_id, date(created_at/1000,'unixepoch') day, COUNT(*) n FROM likes WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(sinceMs, codeId));
-      fillPost('stars', db.prepare("SELECT post_id, date(created_at/1000,'unixepoch') day, COUNT(*) n FROM stars WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(sinceMs, codeId));
+      fillPost('stars', db.prepare("SELECT post_id, date(created_at/1000,'unixepoch') day, CAST(ROUND(SUM(value)/2.0) AS INTEGER) n FROM stars WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(sinceMs, codeId));
     }
 
     res.json({
@@ -284,10 +285,13 @@ export function registerUploadRoutes(app) {
         imageKeys.push(key);
       }
 
+      // The uploader can pick which image is the card thumbnail (defaults to the first).
+      const thumbIndex = Math.max(0, Math.min(imageKeys.length - 1, Math.round(Number(meta.thumbnailIndex) || 0)));
+
       insertPost.run(
         id, title, String(meta.thumbnailName || '').trim() || null, req.uploaderCode.display_name,
         String(meta.designer || '').trim() || null, category, dims.x, dims.y, dims.z, dims.blocks,
-        Date.now(), String(meta.description || '').trim() || null, imageKeys[0], fileKey, fileHash,
+        Date.now(), String(meta.description || '').trim() || null, imageKeys[thumbIndex], fileKey, fileHash,
         stamped.length, req.uploaderCode.id, (req.get('X-Device-Token') || '').trim() || null,
         req.ip || null,
       );

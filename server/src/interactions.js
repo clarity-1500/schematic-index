@@ -1,8 +1,22 @@
+import crypto from 'node:crypto';
 import { db } from './db.js';
 import { rateLimit } from './ratelimit.js';
 import { reportToDiscord } from './discord.js';
 
 const REASONS = new Set(['NSFW', 'STOLEN', 'SPAM', 'OTHER']);
+
+// Unambiguous alphabet (no 0/O/1/I/L) for 5-char shared-collection codes.
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+function newCode() {
+  let code = '';
+  for (let i = 0; i < 5; i++) code += CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
+  return code;
+}
+
+const visibleForShare = db.prepare("SELECT 1 FROM posts WHERE id = ? AND visibility = 'visible'");
+const insertCollectionCode = db.prepare('INSERT INTO collection_codes (code, post_ids, created_at) VALUES (?, ?, ?)');
+const getCollectionCode = db.prepare('SELECT post_ids FROM collection_codes WHERE code = ?');
 
 const visiblePost = db.prepare("SELECT * FROM posts WHERE id = ? AND visibility = 'visible'");
 const likeCount = db.prepare('SELECT likes FROM posts WHERE id = ?');
@@ -145,6 +159,47 @@ export function registerInteractionRoutes(app) {
 
     const summary = starSummary.get(id);
     res.json({ starCount: summary.n, starAvg: summary.avg / 2, myStars: value });
+  });
+
+  const shareLimit = rateLimit({ name: 'share', windowMs: 60_000, max: 20 });
+
+  app.post('/collections/share', shareLimit, (req, res) => {
+    const raw = Array.isArray(req.body?.postIds) ? req.body.postIds.map(String) : [];
+    const valid = [...new Set(raw)].filter((id) => id && visibleForShare.get(id)).slice(0, 200);
+
+    if (!valid.length) {
+      return res.status(400).json({ error: 'empty', message: 'None of those posts are available to share.' });
+    }
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const code = newCode();
+
+      try {
+        insertCollectionCode.run(code, JSON.stringify(valid), Date.now());
+        return res.json({ code });
+      } catch {
+        // Code collision - try another.
+      }
+    }
+
+    res.status(500).json({ error: 'code_failed', message: 'Could not generate a code, try again.' });
+  });
+
+  app.get('/collections/:code', (req, res) => {
+    const row = getCollectionCode.get(String(req.params.code || '').toUpperCase());
+
+    if (!row) {
+      return res.status(404).json({ error: 'not_found', message: 'Unknown collection code.' });
+    }
+
+    let postIds = [];
+    try {
+      postIds = JSON.parse(row.post_ids);
+    } catch {
+      postIds = [];
+    }
+
+    res.json({ postIds });
   });
 
   app.post('/report', reportLimit, (req, res) => {

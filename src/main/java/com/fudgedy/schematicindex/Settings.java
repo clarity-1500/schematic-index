@@ -24,6 +24,7 @@ public final class Settings {
 	private static final String KEY_NOTIFICATIONS = "notifications";
 	private static final String KEY_CREATOR_ALERTS = "creator_alerts";
 	private static final String KEY_NOTIFICATIONS_SEEN = "notifications_seen_at";
+	private static final String KEY_LAST_VISIT = "last_visit_at";
 	private static final String KEY_DEVICE_TOKEN = "device_token";
 	private static final String KEY_TERMS = "terms_accepted";
 	private static final String KEY_SKIP_DESIGNER_WARNING = "skip_designer_warning";
@@ -51,6 +52,7 @@ public final class Settings {
 	private static boolean notifications = true;
 	private static boolean creatorAlerts = true;
 	private static long notificationsSeenAt;
+	private static long lastVisitAt;
 	private static @Nullable Path customDownloadDirectory;
 
 	private static int gridDensity;
@@ -134,6 +136,15 @@ public final class Settings {
 
 	public static void toggleCreatorAlerts() {
 		creatorAlerts = !creatorAlerts;
+		save();
+	}
+
+	public static long lastVisitAt() {
+		return lastVisitAt;
+	}
+
+	public static void setLastVisitAt(long at) {
+		lastVisitAt = at;
 		save();
 	}
 
@@ -291,6 +302,7 @@ public final class Settings {
 		notifications = parse(properties.getProperty(KEY_NOTIFICATIONS), true);
 		creatorAlerts = parse(properties.getProperty(KEY_CREATOR_ALERTS), true);
 		notificationsSeenAt = parseLong(properties.getProperty(KEY_NOTIFICATIONS_SEEN), 0L);
+		lastVisitAt = parseLong(properties.getProperty(KEY_LAST_VISIT), 0L);
 		deviceToken = properties.getProperty(KEY_DEVICE_TOKEN, "");
 		termsAccepted = parse(properties.getProperty(KEY_TERMS), false);
 		skipDesignerWarning = parse(properties.getProperty(KEY_SKIP_DESIGNER_WARNING), false);
@@ -314,6 +326,7 @@ public final class Settings {
 		properties.setProperty(KEY_NOTIFICATIONS, Boolean.toString(notifications));
 		properties.setProperty(KEY_CREATOR_ALERTS, Boolean.toString(creatorAlerts));
 		properties.setProperty(KEY_NOTIFICATIONS_SEEN, Long.toString(notificationsSeenAt));
+		properties.setProperty(KEY_LAST_VISIT, Long.toString(lastVisitAt));
 		properties.setProperty(KEY_TERMS, Boolean.toString(termsAccepted));
 		properties.setProperty(KEY_SKIP_DESIGNER_WARNING, Boolean.toString(skipDesignerWarning));
 		properties.setProperty(KEY_TERMS_VERSION, Integer.toString(cachedTermsVersion));

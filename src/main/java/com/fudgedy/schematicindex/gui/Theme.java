@@ -433,6 +433,22 @@ public final class Theme {
 		sound(SoundEvents.NOTE_BLOCK_HARP.value(), 1.0F, 0.9F);
 	}
 
+	public static void rate() {
+		sound(SoundEvents.NOTE_BLOCK_BELL.value(), 1.2F, 0.6F);
+	}
+
+	// A small pencil, drawn diagonally from tip (bottom-left) to eraser (top-right).
+	public static void editGlyph(GuiGraphics ctx, int x, int y, int color) {
+		ctx.fill(x, y + 6, x + 2, y + 8, color);
+		ctx.fill(x + 1, y + 5, x + 3, y + 7, color);
+		ctx.fill(x + 2, y + 4, x + 4, y + 6, color);
+		ctx.fill(x + 3, y + 3, x + 5, y + 5, color);
+		ctx.fill(x + 4, y + 2, x + 6, y + 4, color);
+		ctx.fill(x + 5, y + 1, x + 7, y + 3, color);
+	}
+
+	public static final int EDIT_GLYPH_WIDTH = 7;
+
 	public static void heartPopped(GuiGraphics ctx, int x, int y, boolean liked, long age) {
 		float scale = 1.0F;
 

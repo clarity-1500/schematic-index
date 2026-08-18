@@ -188,6 +188,7 @@ public class IndexScreen extends Screen {
 	private final Rect unpublishBounds = new Rect();
 
 	private final Rect closeButton = new Rect();
+	private final Rect backToTopButton = new Rect();
 	private final Rect sortButton = new Rect();
 	private final Rect downloadFilterButton = new Rect();
 	// 0 = all, 1 = only downloaded, 2 = not yet downloaded.
@@ -204,6 +205,8 @@ public class IndexScreen extends Screen {
 	private final Rect formImagePrev = new Rect();
 	private final Rect formImageNext = new Rect();
 	private final Rect formImageRemove = new Rect();
+	private final Rect formThumbnailButton = new Rect();
+	private int formThumbnailIndex;
 	private final Rect uploadPicturesButton = new Rect();
 	private final Rect uploadSchematicButton = new Rect();
 	private @Nullable Path formSchematic;
@@ -231,6 +234,10 @@ public class IndexScreen extends Screen {
 	// Minecraft restart). Drives the recently-viewed top row on the default browse view.
 	private static final List<String> RECENT_VIEWED = new ArrayList<>();
 	private static final int RECENT_VIEWED_MAX = 24;
+
+	// Posts uploaded after this time are flagged "New". Captured once per Minecraft launch from
+	// the stored last-visit time, which is then advanced to now.
+	private static long newSinceCutoff = -1L;
 
 	// In-memory upload draft, kept across closing/reopening the menu so a half-filled post
 	// survives an accidental tab switch or menu close. Cleared on Minecraft restart or a
@@ -266,6 +273,7 @@ public class IndexScreen extends Screen {
 	private @Nullable String selectedDashPost;
 	private final List<Rect> myPostCardRects = new ArrayList<>();
 	private final List<String> myPostCardIds = new ArrayList<>();
+	private final List<Rect> myPostEditRects = new ArrayList<>();
 	private final Rect dashUploadButton = new Rect();
 	private final Rect uploadBackButton = new Rect();
 	private float dashScroll;
@@ -315,6 +323,13 @@ public class IndexScreen extends Screen {
 	private double detailStarAvg;   // average rating 0..5
 	private int detailStarCount;    // number of ratings
 	private final Rect[] detailStarRects = {new Rect(), new Rect(), new Rect(), new Rect(), new Rect()};
+
+	// Debounced rating: clicks update the stars instantly and locally, but the value is only sent
+	// once the user stops clicking (avoids spamming the server and the flash from racing responses).
+	private int pendingRateValue = -1;
+	private long pendingRateAt;
+	private @Nullable String pendingRateId;
+	private static final long RATE_DEBOUNCE_MS = 550L;
 	
 	private @Nullable SchematicEntry pendingOverwrite;
 	private final Rect overwriteReplace = new Rect();
@@ -389,6 +404,19 @@ public class IndexScreen extends Screen {
 	private final List<Rect> collectionChips = new ArrayList<>();
 	private final Rect newCollectionChip = new Rect();
 	private final Rect addPostsChip = new Rect();
+	private final Rect loadCodeChip = new Rect();
+	private final Rect generateCodeChip = new Rect();
+	private @Nullable String sharedCode;   // generated share code for the active collection
+	private boolean sharingCode;
+
+	// Modal for entering a shared collection code.
+	private boolean loadCodeOpen;
+	private String loadCodeInput = "";
+	private String loadCodeStatus = "";
+	private final Rect loadCodeConfirm = new Rect();
+	private final Rect loadCodeCancel = new Rect();
+	private final Rect loadCodeBounds = new Rect();
+
 	private final Rect addModeDone = new Rect();
 	private final Rect detailCollection = new Rect();
 	private boolean collectionMenuOpen;
@@ -518,6 +546,12 @@ public class IndexScreen extends Screen {
 		this.restoreDraft();
 		this.refreshDownloadedNames();
 
+		// Once per launch: remember what counts as "new since last visit", then mark this visit.
+		if (newSinceCutoff < 0L) {
+			newSinceCutoff = Settings.lastVisitAt();
+			Settings.setLastVisitAt(System.currentTimeMillis());
+		}
+
 		int avgBoldChar = Math.max(4, this.font.width(Theme.bold("abcdefghijklmnopqrstuvwxyz")) / 26 + 1);
 		this.thumbnailBox.setMaxLength(Math.max(10, (this.cardWidth - 12) / avgBoldChar));
 		this.titleBox.setMaxLength(Math.max(24, 190 / avgBoldChar));
@@ -591,10 +625,10 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
-		this.titleBox.setValue(draftTitle);
-		this.thumbnailBox.setValue(draftThumbnail);
-		this.designerBox.setValue(draftDesigner);
-		this.descriptionBox.setValue(draftDescription);
+		this.fillEditField(this.titleBox, draftTitle);
+		this.fillEditField(this.thumbnailBox, draftThumbnail);
+		this.fillEditField(this.designerBox, draftDesigner);
+		this.fillEditField(this.descriptionBox, draftDescription);
 
 		if (draftCategory != null) {
 			this.formCategory = draftCategory;
@@ -749,12 +783,32 @@ public class IndexScreen extends Screen {
 			x = this.wrapChip(x, addWidth, firstRowLimit, limit, row);
 			this.addPostsChip.set(x, TOP_BAR_HEIGHT + 6 + row[0] * (CHIP_HEIGHT + CHIP_GAP), addWidth, CHIP_HEIGHT);
 			x += addWidth + CHIP_GAP;
+
+			String genLabel = this.generateCodeLabel();
+			int genWidth = this.font.width(Theme.bold(genLabel)) + 12;
+			x = this.wrapChip(x, genWidth, firstRowLimit, limit, row);
+			this.generateCodeChip.set(x, TOP_BAR_HEIGHT + 6 + row[0] * (CHIP_HEIGHT + CHIP_GAP), genWidth, CHIP_HEIGHT);
+			x += genWidth + CHIP_GAP;
 		} else {
 			this.addPostsChip.set(0, 0, 0, 0);
+			this.generateCodeChip.set(0, 0, 0, 0);
 		}
+
+		int loadWidth = this.font.width(Theme.bold("Load code")) + 12;
+		x = this.wrapChip(x, loadWidth, firstRowLimit, limit, row);
+		this.loadCodeChip.set(x, TOP_BAR_HEIGHT + 6 + row[0] * (CHIP_HEIGHT + CHIP_GAP), loadWidth, CHIP_HEIGHT);
+		x += loadWidth + CHIP_GAP;
 
 		this.chipRowHeight = 6 + (row[0] + 1) * CHIP_HEIGHT + row[0] * CHIP_GAP + 6;
 		this.sortButton.set(this.contentX + this.contentWidth - sortWidth, TOP_BAR_HEIGHT + 6, sortWidth, CHIP_HEIGHT);
+	}
+
+	private String generateCodeLabel() {
+		if (this.sharedCode != null) {
+			return this.sharedCode;
+		}
+
+		return this.sharingCode ? "..." : "Generate code";
 	}
 
 	private int wrapChip(int x, int width, int firstRowLimit, int limit, int[] row) {
@@ -1051,6 +1105,7 @@ public class IndexScreen extends Screen {
 
 		this.renderRail(ctx, hoverX, hoverY);
 		this.renderTopBar(ctx, hoverX, hoverY);
+		this.renderBackToTop(ctx, hoverX, hoverY, overlayOpen);
 
 		long nowMs = System.currentTimeMillis();
 
@@ -1064,6 +1119,8 @@ public class IndexScreen extends Screen {
 			this.pollNotifications();
 		}
 
+		this.flushPendingRate(false);
+
 		this.updateBanner();
 		this.renderBanner(ctx, mouseX, mouseY);
 
@@ -1071,6 +1128,10 @@ public class IndexScreen extends Screen {
 
 		if (this.gridPage()) {
 			this.searchBox.render(ctx, mouseX, mouseY, partialTick);
+
+			if (!overlayOpen) {
+				this.renderSearchSuggestions(ctx);
+			}
 		} else if (this.searchBox.isFocused()) {
 			this.searchBox.setFocused(false);
 		}
@@ -1107,6 +1168,10 @@ public class IndexScreen extends Screen {
 
 		if (this.nameInputOpen) {
 			this.renderNameInput(ctx, mouseX, mouseY);
+		}
+
+		if (this.loadCodeOpen) {
+			this.renderLoadCode(ctx, mouseX, mouseY);
 		}
 
 		if (this.collectionOptionsOpen) {
@@ -1338,6 +1403,47 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.nameConfirm, "Create", mouseX, mouseY, true);
 	}
 
+	private void renderLoadCode(GuiGraphics ctx, int mouseX, int mouseY) {
+		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+
+		int pad = 16;
+		int cardWidth = Math.min(this.width - 40, 300);
+		int line = this.font.lineHeight;
+		int cardHeight = pad + line + 10 + FIELD_HEIGHT + 8 + line + 12 + FIELD_HEIGHT + pad;
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+		this.loadCodeBounds.set(x, y, cardWidth, cardHeight);
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+		Theme.text(ctx, this.font, Theme.bold("Load a collection code"), x + pad, y + pad, Theme.TEXT);
+
+		int fieldY = y + pad + line + 10;
+		int fieldWidth = cardWidth - pad * 2;
+		Theme.roundedRect(ctx, x + pad, fieldY, fieldWidth, FIELD_HEIGHT, Theme.RADIUS_PILL, Theme.SURFACE_ELEVATED);
+		Theme.roundedOutline(ctx, x + pad, fieldY, fieldWidth, FIELD_HEIGHT, Theme.RADIUS_PILL, Theme.ACCENT);
+
+		boolean caret = System.currentTimeMillis() / 500 % 2 == 0;
+		String display = this.loadCodeInput.isEmpty() && !caret ? "5-character code" : this.loadCodeInput + (caret ? "_" : "");
+		int textColor = this.loadCodeInput.isEmpty() && !caret ? Theme.TEXT_MUTE : Theme.TEXT;
+		Theme.text(ctx, this.font, display, x + pad + 6, fieldY + (FIELD_HEIGHT - line) / 2 + 1, textColor);
+
+		int statusY = fieldY + FIELD_HEIGHT + 8;
+
+		if (!this.loadCodeStatus.isEmpty()) {
+			Theme.text(ctx, this.font, Theme.clip(this.font, this.loadCodeStatus, fieldWidth), x + pad, statusY,
+					Theme.ACCENT_BRIGHT);
+		}
+
+		int btnY = statusY + line + 12;
+		int cancelWidth = this.font.width(Theme.bold("Cancel")) + 20;
+		int loadWidth = this.font.width(Theme.bold("Load")) + 20;
+		this.loadCodeCancel.set(x + pad, btnY, cancelWidth, FIELD_HEIGHT);
+		this.loadCodeConfirm.set(x + cardWidth - pad - loadWidth, btnY, loadWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.loadCodeCancel, "Cancel", mouseX, mouseY, false);
+		this.pillButton(ctx, this.loadCodeConfirm, "Load", mouseX, mouseY, true);
+	}
+
 	private void openCollectionOptions(String name) {
 		this.collectionOptionsOpen = true;
 		this.collectionOptionsName = name;
@@ -1516,10 +1622,19 @@ public class IndexScreen extends Screen {
 		this.editPostId = id;
 		this.editStatus = "";
 		this.editCategory = entry.category();
-		this.editTitleBox.setValue(entry.title());
-		this.editThumbnailBox.setValue(entry.thumbnailName() == null ? "" : entry.thumbnailName());
-		this.editDesignerBox.setValue(entry.designer() == null ? "" : entry.designer());
-		this.editDescriptionBox.setValue(entry.description() == null ? "" : entry.description());
+		this.fillEditField(this.editTitleBox, entry.title());
+		this.fillEditField(this.editThumbnailBox, entry.thumbnailName() == null ? "" : entry.thumbnailName());
+		this.fillEditField(this.editDesignerBox, entry.designer() == null ? "" : entry.designer());
+		this.fillEditField(this.editDescriptionBox, entry.description() == null ? "" : entry.description());
+		this.setFocused(null);
+	}
+
+	// Pre-fills a field and parks the cursor at the start, so a long value shows from the
+	// beginning instead of scrolled to its end.
+	private void fillEditField(EditBox box, String value) {
+		box.setValue(value);
+		box.setCursorPosition(0);
+		box.setHighlightPos(0);
 	}
 
 	private void renderEditPost(GuiGraphics ctx, int mouseX, int mouseY, float partialTick) {
@@ -1614,7 +1729,7 @@ public class IndexScreen extends Screen {
 		int cardWidth = Math.min(this.width - 40, 320);
 		int line = this.font.lineHeight;
 		List<String> lines = this.wrap("Unpublish \"" + this.unpublishTitle
-				+ "\"? It will be hidden from the index. You can't undo this from the mod.", cardWidth - pad * 2 - 4, 4);
+				+ "\"? It will be removed from the index. You cannot undo this action.", cardWidth - pad * 2 - 4, 4);
 		int cardHeight = pad + line + 8 + lines.size() * (line + 2) + 14 + FIELD_HEIGHT + pad;
 		int x = (this.width - cardWidth) / 2;
 		int y = (this.height - cardHeight) / 2;
@@ -1664,7 +1779,7 @@ public class IndexScreen extends Screen {
 				if (status / 100 == 2) {
 					this.myStatsLoaded = false;
 					Catalogue.refresh();
-					Toasts.push("Post unpublished", "It's now hidden from the index.", new ItemStack(Items.BARRIER));
+					Toasts.push("Post unpublished", "No one can view it any longer.", new ItemStack(Items.BARRIER));
 				} else {
 					this.showError(Errors.UPLOAD);
 				}
@@ -2404,7 +2519,11 @@ public class IndexScreen extends Screen {
 
 		if (this.activeCollection != null) {
 			this.chipPill(ctx, this.addPostsChip, "+ Add posts", false, mouseX, mouseY);
+			// Once generated, the chip shows the code (in accent) and copies it when clicked.
+			this.chipPill(ctx, this.generateCodeChip, this.generateCodeLabel(), this.sharedCode != null, mouseX, mouseY);
 		}
+
+		this.chipPill(ctx, this.loadCodeChip, "Load code", false, mouseX, mouseY);
 	}
 
 	private void chipPill(GuiGraphics ctx, Rect rect, String label, boolean active, int mouseX, int mouseY) {
@@ -2678,6 +2797,7 @@ public class IndexScreen extends Screen {
 		for (int i = 0; i < this.collectionChips.size(); i++) {
 			if (this.collectionChips.get(i).contains(mouseX, mouseY)) {
 				this.activeCollection = i == 0 ? null : (i - 1 < names.size() ? names.get(i - 1) : null);
+				this.sharedCode = null;
 				Theme.click();
 				this.scroll = 0.0F;
 				this.layoutChips();
@@ -2706,7 +2826,110 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
+		if (this.activeCollection != null && this.generateCodeChip.contains(mouseX, mouseY)) {
+			if (this.sharedCode != null) {
+				this.copyToClipboard(this.sharedCode);
+				this.status = "Copied " + this.sharedCode + " to your clipboard.";
+				Theme.click(1.2F);
+			} else if (!this.sharingCode) {
+				this.generateShareCode();
+			}
+
+			return true;
+		}
+
+		if (this.loadCodeChip.contains(mouseX, mouseY)) {
+			this.loadCodeOpen = true;
+			this.loadCodeInput = "";
+			this.loadCodeStatus = "";
+			this.modalFocus = -1;
+			Theme.click(1.1F);
+			return true;
+		}
+
 		return false;
+	}
+
+	private void copyToClipboard(String text) {
+		try {
+			Minecraft.getInstance().keyboardHandler.setClipboard(text);
+		} catch (Throwable ignored) {
+			// Clipboard is best-effort.
+		}
+	}
+
+	private void generateShareCode() {
+		String collection = this.activeCollection;
+
+		if (collection == null) {
+			return;
+		}
+
+		List<String> ids = new ArrayList<>(CollectionStore.postIds(collection));
+
+		if (ids.isEmpty()) {
+			this.status = "Add some posts before sharing this collection.";
+			return;
+		}
+
+		this.sharingCode = true;
+		Theme.click(1.1F);
+
+		Thread worker = new Thread(() -> {
+			String code = Backend.shareCollection(ids);
+			Minecraft.getInstance().execute(() -> {
+				this.sharingCode = false;
+
+				if (code != null && collection.equals(this.activeCollection)) {
+					this.sharedCode = code;
+					this.layoutChips();
+				} else if (code == null) {
+					this.status = "Could not create a code, try again.";
+				}
+			});
+		}, "schematicindex-share");
+		worker.setDaemon(true);
+		worker.start();
+	}
+
+	private void confirmLoadCode() {
+		String code = this.loadCodeInput.trim().toUpperCase(Locale.ROOT);
+
+		if (code.length() != 5) {
+			this.loadCodeStatus = "Codes are 5 characters.";
+			return;
+		}
+
+		this.loadCodeStatus = "Loading...";
+
+		Thread worker = new Thread(() -> {
+			List<String> ids = Backend.loadCollectionCode(code);
+			Minecraft.getInstance().execute(() -> {
+				if (ids == null || ids.isEmpty()) {
+					this.loadCodeStatus = ids == null ? "Unknown code." : "That collection is empty.";
+					return;
+				}
+
+				String name = "Shared " + code;
+				CollectionStore.create(name);
+
+				for (String id : ids) {
+					if (!CollectionStore.contains(name, id)) {
+						CollectionStore.toggle(name, id);
+					}
+				}
+
+				this.loadCodeOpen = false;
+				this.activeCollection = name;
+				this.sharedCode = null;
+				this.layoutChips();
+				this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
+				this.refilter();
+				Toasts.push("Collection loaded", ids.size() + " posts added.", new ItemStack(Items.BOOKSHELF));
+			});
+		}, "schematicindex-loadcode");
+		worker.setDaemon(true);
+		worker.start();
 	}
 
 	private void openNameInput(@Nullable String pendingPost) {
@@ -2895,6 +3118,14 @@ public class IndexScreen extends Screen {
 			Theme.text(ctx, this.font, "Saved", badgeX + 4, y + 6, Theme.ON_ACCENT);
 		}
 
+		// "New" badge (top-left) for posts uploaded since the last visit.
+		if (newSinceCutoff > 0L && entry.postedAt() > newSinceCutoff && !entry.id().equals("preview")) {
+			int badge = this.font.width(Theme.bold("New")) + 8;
+			Theme.roundedRect(ctx, x + 3, y + 3, badge + 2, 13, Theme.RADIUS_PILL, 0xFF000000);
+			Theme.roundedRect(ctx, x + 4, y + 4, badge, 11, Theme.RADIUS_PILL, Theme.ACCENT_BRIGHT);
+			Theme.text(ctx, this.font, Theme.bold("New"), x + 8, y + 6, Theme.ON_ACCENT);
+		}
+
 		int textX = x + 5;
 		int textWidth = this.cardWidth - 10;
 
@@ -2920,6 +3151,88 @@ public class IndexScreen extends Screen {
 		Rect rect = new Rect();
 		rect.set(cardX + this.cardWidth - HEART_SIZE - 6, cardY + imageHeight - HEART_SIZE - 5, HEART_SIZE, HEART_SIZE);
 		return rect;
+	}
+
+	// A floating "back to top" button in the bottom-right, shown once a scrollable page has been
+	// scrolled down a fair way.
+	private void renderBackToTop(GuiGraphics ctx, int mouseX, int mouseY, boolean overlayOpen) {
+		boolean dashboard = this.page == Page.UPLOAD && !this.uploadFormOpen;
+		float active = dashboard ? this.dashScroll : this.scroll;
+		boolean scrollable = this.page != Page.UPLOAD || dashboard;
+
+		if (overlayOpen || this.tosOpen || this.tutorialActive || !scrollable || active < 140.0F) {
+			this.backToTopButton.set(0, 0, 0, 0);
+			return;
+		}
+
+		int size = 22;
+		int rightEdge = this.page == Page.BROWSE && !RemoteContent.partners().isEmpty()
+				? this.width - PARTNER_RAIL_WIDTH : this.contentX + this.contentWidth;
+		int bx = rightEdge - size - 8;
+		int by = this.height - size - 10;
+		this.backToTopButton.set(bx, by, size, size);
+
+		boolean hovered = this.backToTopButton.contains(mouseX, mouseY);
+		Theme.roundedRect(ctx, bx, by, size, size, size / 2, hovered ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, bx, by, size, size, size / 2, hovered ? Theme.ACCENT : Theme.HAIRLINE);
+
+		// Up chevron.
+		int cx = bx + size / 2;
+		int cy = by + size / 2;
+		int color = hovered ? Theme.ACCENT_BRIGHT : Theme.TEXT;
+
+		for (int i = 0; i < 4; i++) {
+			ctx.fill(cx - i, cy - 3 + i, cx - i + 1, cy - 2 + i, color);
+			ctx.fill(cx + i, cy - 3 + i, cx + i + 1, cy - 2 + i, color);
+		}
+	}
+
+	// A read-only list of matching post titles under the search box, so you can tell whether
+	// what you're looking for exists as you type. (Full server-side search comes later.)
+	private void renderSearchSuggestions(GuiGraphics ctx) {
+		if (!this.searchBox.isFocused() || this.detail != null) {
+			return;
+		}
+
+		String q = this.query.trim().toLowerCase(Locale.ROOT);
+
+		if (q.length() < 2) {
+			return;
+		}
+
+		List<String> matches = new ArrayList<>();
+
+		for (SchematicEntry entry : Catalogue.posts()) {
+			String title = entry.title();
+
+			if (title.toLowerCase(Locale.ROOT).contains(q) && !matches.contains(title)) {
+				matches.add(title);
+
+				if (matches.size() >= 6) {
+					break;
+				}
+			}
+		}
+
+		if (matches.isEmpty()) {
+			return;
+		}
+
+		int x = this.searchBox.getX() - 6;
+		int w = this.searchBox.getWidth() + 12;
+		int rowH = this.font.lineHeight + 5;
+		int y = TOP_BAR_HEIGHT + 2;
+		int h = matches.size() * rowH + 6;
+
+		Theme.roundedRect(ctx, x, y, w, h, Theme.RADIUS_CARD, Theme.SURFACE_ELEVATED);
+		Theme.roundedOutline(ctx, x, y, w, h, Theme.RADIUS_CARD, Theme.HAIRLINE);
+
+		int ty = y + 5;
+
+		for (String match : matches) {
+			Theme.text(ctx, this.font, Theme.clip(this.font, match, w - 12), x + 6, ty, Theme.TEXT_MUTE);
+			ty += rowH;
+		}
 	}
 
 	private void renderScrollbar(GuiGraphics ctx) {
@@ -2962,7 +3275,7 @@ public class IndexScreen extends Screen {
 		return this.detail != null || this.errorOpen || this.nameInputOpen || this.deleteCollectionOpen
 				|| this.collectionOptionsOpen || this.renameCollectionOpen || this.tutorialActive
 				|| this.designerWarnOpen || this.reportOpen || this.pendingOverwrite != null
-				|| this.postOptionsOpen || this.editPostOpen || this.unpublishOpen;
+				|| this.postOptionsOpen || this.editPostOpen || this.unpublishOpen || this.loadCodeOpen;
 	}
 
 	// Begins a scrollbar drag if the click landed on (or near) the thumb of the bar drawn this
@@ -3163,7 +3476,8 @@ public class IndexScreen extends Screen {
 		int savedCardHeight = this.cardHeight;
 		this.cardWidth = cardPreviewWidth;
 		this.cardHeight = imageHeight(cardPreviewWidth) + CAPTION_HEIGHT;
-		this.renderCard(ctx, preview, rightX, ry, -999, -999);
+		// The card shows whichever picture the user picked as the thumbnail (image 0 by default).
+		this.renderCard(ctx, this.thumbnailPreviewEntry(preview), rightX, ry, -999, -999);
 		ry += this.cardHeight + 16;
 		this.cardWidth = savedCardWidth;
 		this.cardHeight = savedCardHeight;
@@ -3171,6 +3485,20 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, Theme.bold("In the post"), rightX, ry, Theme.TEXT_MUTE);
 		ry += this.font.lineHeight + 6;
 		this.renderDetailPreview(ctx, preview, rightX, ry, rightW, mouseX, mouseY);
+	}
+
+	// Like the preview, but with its first image pointed at the chosen thumbnail so the little
+	// "Post Thumbnail" card shows the picture the user picked.
+	private SchematicEntry thumbnailPreviewEntry(SchematicEntry preview) {
+		if (this.formPictures.isEmpty() || this.formPictureStart < 0 || this.formThumbnailIndex <= 0) {
+			return preview;
+		}
+
+		int start = this.formPictureStart + Math.min(this.formThumbnailIndex, this.formPictures.size() - 1);
+		return SchematicEntry.local("preview", preview.title(), preview.thumbnailName(), preview.poster(),
+				preview.designer(), preview.category(), preview.sizeX(), preview.sizeY(), preview.sizeZ(),
+				preview.blockCount(), 0, 0, preview.postedAt(), preview.description(), preview.imageCount(),
+				start, -1, false);
 	}
 
 	private SchematicEntry previewEntry() {
@@ -3234,8 +3562,21 @@ public class IndexScreen extends Screen {
 			Theme.roundedOutline(ctx, rx, ry, xs, xs, Theme.RADIUS_CARD, Theme.HAIRLINE);
 			this.drawLine(ctx, rx + 4, ry + 4, rx + xs - 4, ry + xs - 4, Theme.TEXT);
 			this.drawLine(ctx, rx + 4, ry + xs - 4, rx + xs - 4, ry + 4, Theme.TEXT);
+
+			// "Set as thumbnail" for the currently shown picture.
+			boolean isThumb = this.formPicturePreview == this.formThumbnailIndex;
+			String label = isThumb ? "★ Thumbnail" : "Set as thumbnail";
+			int tw = this.font.width(label) + 10;
+			int tx = x + pad + 4;
+			int ty = y + pad + imageHeight - 15;
+			this.formThumbnailButton.set(tx, ty, tw, 12);
+			boolean thumbHover = this.formThumbnailButton.contains(mouseX, mouseY);
+			Theme.roundedRect(ctx, tx, ty, tw, 12, Theme.RADIUS_PILL,
+					isThumb ? Theme.ACCENT : (thumbHover ? 0xEE000000 : 0xCC0F1114));
+			Theme.text(ctx, this.font, label, tx + 5, ty + 2, isThumb ? Theme.ON_ACCENT : Theme.TEXT);
 		} else {
 			this.formImageRemove.set(0, 0, 0, 0);
+			this.formThumbnailButton.set(0, 0, 0, 0);
 		}
 
 		int infoX = x + pad + imageWidth + pad;
@@ -3383,7 +3724,7 @@ public class IndexScreen extends Screen {
 			{"Views", SchematicEntry.compact(this.myViews)},
 			{"Downloads", SchematicEntry.compact(this.myDownloads)},
 			{"Likes", SchematicEntry.compact(this.myLikes)},
-			{"Rating", this.myRatingCount > 0 ? String.format(Locale.ROOT, "%.1f", this.myRating) : "-"},
+			{"Avg Stars", this.myRatingCount > 0 ? String.format(Locale.ROOT, "%.1f", this.myRating) : "-"},
 			{"Followers", SchematicEntry.compact(this.myFollowers)},
 		};
 		int tileGap = 8;
@@ -3409,6 +3750,7 @@ public class IndexScreen extends Screen {
 
 		this.myPostCardRects.clear();
 		this.myPostCardIds.clear();
+		this.myPostEditRects.clear();
 
 		if (shown.isEmpty()) {
 			String msg = this.myPosts.isEmpty()
@@ -3432,6 +3774,10 @@ public class IndexScreen extends Screen {
 				this.myPostCardRects.add(rect);
 				this.myPostCardIds.add(shown.get(i).id());
 
+				Rect editRect = new Rect();
+				editRect.set(cx + cw - 16, cy + 3, 13, 13);
+				this.myPostEditRects.add(editRect);
+
 				if (cy + ch >= scrollTop && cy <= scrollBottom) {
 					this.renderCard(ctx, shown.get(i), cx, cy, -999, -999);
 
@@ -3444,6 +3790,14 @@ public class IndexScreen extends Screen {
 					} else if (hovered) {
 						Theme.roundedOutline(ctx, cx, cy, cw, ch, Theme.RADIUS_CARD, Theme.HAIRLINE);
 					}
+
+					// A small edit button in the top-right that opens the edit/unpublish options.
+					boolean editHover = editRect.contains(mouseX, mouseY)
+							&& mouseY >= scrollTop && mouseY <= scrollBottom;
+					Theme.roundedRect(ctx, editRect.x, editRect.y, editRect.width, editRect.height,
+							Theme.RADIUS_PILL, editHover ? 0xF0000000 : 0xB0000000);
+					Theme.editGlyph(ctx, editRect.x + 3, editRect.y + 3,
+							editHover ? Theme.ACCENT_BRIGHT : Theme.TEXT);
 				}
 			}
 
@@ -4046,10 +4400,11 @@ public class IndexScreen extends Screen {
 				"Confirm first when overwriting a file that contains the same name, when downloading "
 						+ "a new schematic.", Settings.confirmOverwrite(),
 				formX, y, formWidth, mouseX, mouseY);
+		y = this.settingsSectionHeader(ctx, "Notifications", formX, y);
 		y = this.settingRow(ctx, this.toastsToggle, "Show toasts",
 				"Show the slide-in notification cards in the corner for things like downloads and follows.",
 				Settings.toasts(), formX, y, formWidth, mouseX, mouseY);
-		y = this.settingRow(ctx, this.notificationsToggle, "Creator notifications",
+		y = this.settingRow(ctx, this.notificationsToggle, "New post alerts",
 				"Get a toast when a creator you follow posts a new schematic.",
 				Settings.notifications(), formX, y, formWidth, mouseX, mouseY);
 
@@ -4640,15 +4995,19 @@ public class IndexScreen extends Screen {
 		line += this.font.lineHeight + 9;
 
 		Theme.text(ctx, this.font, "Total stars", infoX, line, Theme.TEXT_ASH);
-		String cnt = SchematicEntry.compact(this.detailStarCount);
-		Theme.text(ctx, this.font, cnt, infoX + infoWidth - this.font.width(cnt), line, Theme.TEXT);
+		// Total stars given = sum of every rating (average x number of ratings).
+		String total = this.detailStarCount > 0 ? formatStars(this.detailStarAvg * this.detailStarCount) : "0";
+		Theme.text(ctx, this.font, total, infoX + infoWidth - this.font.width(total), line, Theme.TEXT);
 		line += this.font.lineHeight + 9;
 
-		Theme.text(ctx, this.font, "Your rating", infoX, line, Theme.TEXT_ASH);
-		int starRowWidth = 5 * this.starCellWidth(1.3F);
-		this.drawStars(ctx, infoX + infoWidth - starRowWidth, line - 1, this.detailMyStars, 1.3F, true,
+		float starScale = 2.0F;
+		int starRowWidth = 5 * this.starCellWidth(starScale);
+		int starRowHeight = Math.round(this.font.lineHeight * starScale);
+		Theme.text(ctx, this.font, "Your rating", infoX, line + (starRowHeight - this.font.lineHeight) / 2,
+				Theme.TEXT_ASH);
+		this.drawStars(ctx, infoX + infoWidth - starRowWidth, line, this.detailMyStars, starScale, true,
 				mouseX, mouseY, this.detailStarRects);
-		line += this.font.lineHeight + 9;
+		line += starRowHeight + 6;
 
 		if (this.detailModel) {
 			line += 6;
@@ -5107,6 +5466,13 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
+		if (this.backToTopButton.width > 0 && this.backToTopButton.contains(mouseX, mouseY)) {
+			this.scroll = 0.0F;
+			this.dashScroll = 0.0F;
+			Theme.click();
+			return true;
+		}
+
 		if (this.errorOpen) {
 			if (this.errorReport.contains(mouseX, mouseY)) {
 				this.openLink(RemoteContent.discord());
@@ -5126,6 +5492,18 @@ public class IndexScreen extends Screen {
 				Theme.click(0.9F);
 				this.nameInputOpen = false;
 				this.namePendingPost = null;
+			}
+
+			return true;
+		}
+
+		if (this.loadCodeOpen) {
+			if (this.loadCodeConfirm.contains(mouseX, mouseY)) {
+				Theme.click(1.1F);
+				this.confirmLoadCode();
+			} else if (this.loadCodeCancel.contains(mouseX, mouseY) || !this.loadCodeBounds.contains(mouseX, mouseY)) {
+				Theme.click(0.9F);
+				this.loadCodeOpen = false;
 			}
 
 			return true;
@@ -5277,19 +5655,6 @@ public class IndexScreen extends Screen {
 						Theme.click(0.9F);
 					}
 
-					return true;
-				}
-			}
-		}
-
-		// Right-click one of your own dashboard posts to edit or unpublish it.
-		if (event.button() == 1 && this.page == Page.UPLOAD && !this.uploadFormOpen && this.detail == null
-				&& !this.postOptionsOpen && !this.editPostOpen && !this.unpublishOpen
-				&& mouseY >= this.dashViewportTop && mouseY <= this.dashViewportBottom) {
-			for (int i = 0; i < this.myPostCardRects.size() && i < this.myPostCardIds.size(); i++) {
-				if (this.myPostCardRects.get(i).contains(mouseX, mouseY)) {
-					this.openPostOptions(this.myPostCardIds.get(i));
-					Theme.click(0.9F);
 					return true;
 				}
 			}
@@ -5638,9 +6003,18 @@ public class IndexScreen extends Screen {
 				}
 			}
 
-			// Clicking a post selects it (or deselects if already selected); the graph then
-			// shows just that post's history.
 			if (mouseY >= this.dashViewportTop && mouseY <= this.dashViewportBottom) {
+				// The edit button opens the edit/unpublish options for that post.
+				for (int i = 0; i < this.myPostEditRects.size() && i < this.myPostCardIds.size(); i++) {
+					if (this.myPostEditRects.get(i).contains(mouseX, mouseY)) {
+						this.openPostOptions(this.myPostCardIds.get(i));
+						Theme.click(0.9F);
+						return true;
+					}
+				}
+
+				// Clicking a post selects it (or deselects if already selected); the graph then
+				// shows just that post's history.
 				for (int i = 0; i < this.myPostCardRects.size() && i < this.myPostCardIds.size(); i++) {
 					if (this.myPostCardRects.get(i).contains(mouseX, mouseY)) {
 						String id = this.myPostCardIds.get(i);
@@ -5680,6 +6054,12 @@ public class IndexScreen extends Screen {
 		if (this.formImageRemove.contains(mouseX, mouseY) && !this.formPictures.isEmpty()) {
 			this.removeFormPicture(this.formPicturePreview);
 			Theme.click(0.9F);
+			return true;
+		}
+
+		if (this.formThumbnailButton.width > 0 && this.formThumbnailButton.contains(mouseX, mouseY)) {
+			this.formThumbnailIndex = this.formPicturePreview;
+			Theme.click(1.1F);
 			return true;
 		}
 
@@ -5855,6 +6235,14 @@ public class IndexScreen extends Screen {
 		return Math.round(this.font.width(STAR_FULL) * scale) + 2;
 	}
 
+	// Formats a star quantity, snapping to the nearest half and dropping a trailing ".0".
+	private static String formatStars(double value) {
+		double snapped = Math.round(value * 2.0) / 2.0;
+		return snapped == Math.rint(snapped)
+				? Integer.toString((int) snapped)
+				: String.format(Locale.ROOT, "%.1f", snapped);
+	}
+
 	// Draws five stars filled to halfStars/2 (0..5). When rects is given, records each star's hit
 	// box for click handling and brightens the hovered one. Half-filled stars are clipped in half.
 	private void drawStars(GuiGraphics ctx, int x, int y, int halfStars, float scale, boolean interactive,
@@ -5887,20 +6275,45 @@ public class IndexScreen extends Screen {
 	}
 
 	// Clicking star k sets a full k-star rating; clicking the same star again drops to a half
-	// star. The average and count update from the server's authoritative response.
+	// star; a third click on that same star clears the rating entirely.
 	private void rateStar(SchematicEntry entry, int starIndex) {
 		int full = (starIndex + 1) * 2;
-		int value = this.detailMyStars == full ? full - 1 : full;
-		this.detailMyStars = value;
-		Theme.like();
+		int value = this.detailMyStars == full ? full - 1 : (this.detailMyStars == full - 1 ? 0 : full);
+		this.queueRating(entry, value);
+	}
 
-		String id = entry.id();
+	// Updates the stars instantly and locally; the value is sent once the user stops clicking.
+	private void queueRating(SchematicEntry entry, int value) {
+		this.detailMyStars = value;
+		Theme.rate();
+		this.pendingRateId = entry.id();
+		this.pendingRateValue = value;
+		this.pendingRateAt = System.currentTimeMillis();
+	}
+
+	// Sends the pending rating once the user has paused (or immediately when `force`), then folds
+	// the server's authoritative average back in - but only if no newer click is queued.
+	private void flushPendingRate(boolean force) {
+		if (this.pendingRateValue < 0 || this.pendingRateId == null) {
+			return;
+		}
+
+		if (!force && System.currentTimeMillis() - this.pendingRateAt < RATE_DEBOUNCE_MS) {
+			return;
+		}
+
+		String id = this.pendingRateId;
+		int value = this.pendingRateValue;
+		this.pendingRateValue = -1;
+		this.pendingRateId = null;
+
 		Thread worker = new Thread(() -> {
 			com.google.gson.JsonObject result = Backend.rate(id, value);
 
 			if (result != null) {
 				Minecraft.getInstance().execute(() -> {
-					if (this.detail != null && this.detail.id().equals(id)) {
+					// Ignore the response if the user has started rating again in the meantime.
+					if (this.pendingRateValue < 0 && this.detail != null && this.detail.id().equals(id)) {
 						this.detailStarAvg = result.has("starAvg") ? result.get("starAvg").getAsDouble() : this.detailStarAvg;
 						this.detailStarCount = result.has("starCount") ? result.get("starCount").getAsInt() : this.detailStarCount;
 						this.detailMyStars = result.has("myStars") ? result.get("myStars").getAsInt() : value;
@@ -6167,6 +6580,7 @@ public class IndexScreen extends Screen {
 		meta.addProperty("designer", designer.isEmpty() ? "Unknown" : designer);
 		meta.addProperty("category", this.formCategory.name());
 		meta.addProperty("description", this.descriptionBox.getValue().trim());
+		meta.addProperty("thumbnailIndex", this.formThumbnailIndex);
 
 		String code = UploaderAccess.code();
 		Path schematic = this.formSchematic;
@@ -6190,6 +6604,7 @@ public class IndexScreen extends Screen {
 					this.formPictures.clear();
 					this.formPictureStart = -1;
 					this.formPicturePreview = 0;
+					this.formThumbnailIndex = 0;
 					this.formSchematic = null;
 					this.formSizeX = 0;
 					this.formSizeY = 0;
@@ -6308,6 +6723,15 @@ public class IndexScreen extends Screen {
 		this.formPictures.addAll(remaining);
 		this.formPictureStart = ImageStore.register(remaining);
 		this.formPicturePreview = remaining.isEmpty() ? 0 : Math.min(index, remaining.size() - 1);
+
+		// Keep the thumbnail pointing at the same picture (or reset if it was the one removed).
+		if (this.formThumbnailIndex == index) {
+			this.formThumbnailIndex = 0;
+		} else if (this.formThumbnailIndex > index) {
+			this.formThumbnailIndex--;
+		}
+
+		this.formThumbnailIndex = remaining.isEmpty() ? 0 : Math.min(this.formThumbnailIndex, remaining.size() - 1);
 		this.formStatus = remaining.isEmpty()
 				? "All pictures removed."
 				: remaining.size() + (remaining.size() == 1 ? " picture selected." : " pictures selected.");
@@ -6707,6 +7131,16 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
+		if (this.loadCodeOpen) {
+			String typed = event.codepointAsString();
+
+			if (this.loadCodeInput.length() < 5 && !typed.isEmpty() && Character.isLetterOrDigit(typed.charAt(0))) {
+				this.loadCodeInput += typed.toUpperCase(Locale.ROOT);
+			}
+
+			return true;
+		}
+
 		if (this.reportContextOpen) {
 			if (event.codepoint() >= ' ' && this.reportContext.length() < REPORT_CONTEXT_MAX) {
 				this.reportContext += event.codepointAsString();
@@ -7001,6 +7435,22 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
+		if (this.loadCodeOpen) {
+			switch (event.key()) {
+				case 259 -> {
+					if (!this.loadCodeInput.isEmpty()) {
+						this.loadCodeInput = this.loadCodeInput.substring(0, this.loadCodeInput.length() - 1);
+					}
+				}
+				case 257, 335 -> this.confirmLoadCode();
+				case 256 -> this.loadCodeOpen = false;
+				default -> {
+				}
+			}
+
+			return true;
+		}
+
 		if (this.collectionOptionsOpen) {
 			if (event.key() == 256) {
 				this.collectionOptionsOpen = false;
@@ -7101,6 +7551,7 @@ public class IndexScreen extends Screen {
 		sessionScroll = this.scroll;
 		sessionShown = this.shownCount;
 		this.saveDraft();
+		this.flushPendingRate(true);
 
 		ImageStore.releaseAll();
 		SchematicPreview.releaseAll();

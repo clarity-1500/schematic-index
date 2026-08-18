@@ -189,6 +189,13 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_stars_post ON stars(post_id);
   CREATE INDEX IF NOT EXISTS idx_stars_created ON stars(created_at);
+
+  -- Shared collections: a short code maps to a JSON list of post ids.
+  CREATE TABLE IF NOT EXISTS collection_codes (
+    code       TEXT PRIMARY KEY,
+    post_ids   TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `);
 
 console.log(`[db] ready at ${paths.db}`);
