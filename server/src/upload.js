@@ -85,7 +85,7 @@ export function registerUploadRoutes(app) {
       return res.status(403).json({ valid: false });
     }
 
-    res.json({ valid: true, displayName: row.display_name });
+    res.json({ valid: true, displayName: row.display_name, ign: row.ign || '' });
   });
 
   app.get('/me/stats', requireCode, (req, res) => {
