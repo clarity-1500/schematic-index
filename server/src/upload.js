@@ -123,6 +123,24 @@ export function registerUploadRoutes(app) {
     fill(series.views, db.prepare("SELECT day, COUNT(*) n FROM views WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(since, codeId));
     fill(series.likes, db.prepare("SELECT date(created_at/1000,'unixepoch') day, COUNT(*) n FROM likes WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(sinceMs, codeId));
 
+    // Per-post daily series so clicking a post on the dashboard can graph just that post.
+    const postSeries = {};
+    for (const p of posts) {
+      postSeries[p.id] = { views: labels.map(() => 0), downloads: labels.map(() => 0), likes: labels.map(() => 0) };
+    }
+    const fillPost = (key, rows) => {
+      for (const r of rows) {
+        const s = postSeries[r.post_id];
+        if (s && r.day in index) s[key][index[r.day]] = r.n;
+      }
+    };
+
+    if (posts.length) {
+      fillPost('downloads', db.prepare("SELECT post_id, day, COUNT(*) n FROM downloads WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(since, codeId));
+      fillPost('views', db.prepare("SELECT post_id, day, COUNT(*) n FROM views WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(since, codeId));
+      fillPost('likes', db.prepare("SELECT post_id, date(created_at/1000,'unixepoch') day, COUNT(*) n FROM likes WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(sinceMs, codeId));
+    }
+
     res.json({
       poster,
       totals: {
@@ -134,6 +152,7 @@ export function registerUploadRoutes(app) {
       },
       days: labels,
       series,
+      postSeries,
       posts: posts.map((p) => ({
         id: p.id,
         title: p.title,

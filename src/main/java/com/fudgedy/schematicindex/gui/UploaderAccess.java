@@ -1,11 +1,13 @@
 package com.fudgedy.schematicindex.gui;
 
 import com.fudgedy.schematicindex.catalogue.Backend;
+import com.google.gson.JsonObject;
 import org.jetbrains.annotations.Nullable;
 
 public final class UploaderAccess {
 	private static @Nullable String profile;
 	private static @Nullable String code;
+	private static @Nullable String ign;
 
 	private UploaderAccess() {
 	}
@@ -22,21 +24,28 @@ public final class UploaderAccess {
 		return code;
 	}
 
+	public static @Nullable String ign() {
+		return ign != null && !ign.isBlank() ? ign : profile;
+	}
+
 	public static @Nullable String redeem(String raw) {
 		String cleaned = raw.trim();
-		String owner = Backend.checkCode(cleaned);
+		JsonObject info = Backend.uploaderInfo(cleaned);
 
-		if (owner != null) {
-			profile = owner;
-			code = cleaned;
+		if (info == null || !info.has("displayName")) {
+			return null;
 		}
 
-		return owner;
+		profile = info.get("displayName").getAsString();
+		code = cleaned;
+		ign = info.has("ign") && !info.get("ign").isJsonNull() ? info.get("ign").getAsString() : null;
+		return profile;
 	}
 
 	public static void signOut() {
 		profile = null;
 		code = null;
+		ign = null;
 	}
 
 	public static String betaHint() {

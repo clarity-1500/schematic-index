@@ -66,6 +66,7 @@ public class IndexScreen extends Screen {
 	private static final int CAPTION_HEIGHT = 28;
 	private static final int CHIP_HEIGHT = 14;
 	private static final int CHIP_GAP = 4;
+	private static final int TRASH_CELL_WIDTH = 13; // trash glyph + padding reserved in named chips
 	private static final int SCROLL_STEP = 24;
 	private static final int HEART_SIZE = 9;
 	private static final int FIELD_HEIGHT = 16;
@@ -129,9 +130,25 @@ public class IndexScreen extends Screen {
 
 	private float scroll;
 	private float maxScroll;
+
+	// Draggable scrollbar. Each scrollbar drawn this frame records its geometry and which
+	// scroll channel it drives, so a click on the thumb can grab it and drag to scroll.
+	private static final int SCROLLBAR_NONE = 0;
+	private static final int SCROLLBAR_MAIN = 1; // this.scroll / this.maxScroll
+	private static final int SCROLLBAR_DASH = 2; // dashScroll / dashMaxScroll
+	private static final int SCROLLBAR_TOS = 3;  // tosScroll / tosMaxScroll
+	private int scrollbarChannel = SCROLLBAR_NONE;
+	private int scrollbarX, scrollbarWidth, scrollbarThumbY, scrollbarThumbHeight;
+	private int scrollbarTrackTop, scrollbarTrackHeight;
+	private boolean draggingScrollbar;
+	private int dragScrollChannel = SCROLLBAR_NONE;
+	private float scrollbarGrabOffset;
 	
 	private int shownCount = PAGE_SIZE;
 	private int focusedCard = -1;
+
+	// Which button is highlighted for arrow-key navigation in the active confirmation modal.
+	private int modalFocus = 0;
 
 	private EditBox searchBox;
 	private EditBox codeBox;
@@ -187,10 +204,18 @@ public class IndexScreen extends Screen {
 	private int[] myDownloadSeries = new int[0];
 	private int[] myLikeSeries = new int[0];
 	private final List<SchematicEntry> myPosts = new ArrayList<>();
+	// Per-post daily series keyed by post id (views/downloads/likes), for the selected-post graph.
+	private final java.util.Map<String, int[][]> myPostSeries = new java.util.HashMap<>();
+	// When set, the graph shows just this post's history instead of the totals.
+	private @Nullable String selectedDashPost;
+	private final List<Rect> myPostCardRects = new ArrayList<>();
+	private final List<String> myPostCardIds = new ArrayList<>();
 	private final Rect dashUploadButton = new Rect();
 	private final Rect uploadBackButton = new Rect();
 	private float dashScroll;
 	private float dashMaxScroll;
+	private int dashViewportTop;
+	private int dashViewportBottom;
 	private Category myFilter = Category.ALL;
 	private final List<Rect> myFilterChips = new ArrayList<>();
 	private boolean myStatsOk;
@@ -281,6 +306,15 @@ public class IndexScreen extends Screen {
 	private final Rect errorClose = new Rect();
 	private final Rect errorReport = new Rect();
 
+	// Card bounds captured during render so a click on the scrim outside them dismisses the modal.
+	private final Rect errorBounds = new Rect();
+	private final Rect nameBounds = new Rect();
+	private final Rect deleteBounds = new Rect();
+	private final Rect designerWarnBounds = new Rect();
+	private final Rect detailBounds = new Rect();
+	private final Rect overwriteBounds = new Rect();
+	private final Rect reportBounds = new Rect();
+
 	// Collections (local, user-made groups of posts shown in the Saved tab).
 	private @Nullable String activeCollection;
 	private @Nullable String addingToCollection;
@@ -297,6 +331,27 @@ public class IndexScreen extends Screen {
 	private final Rect nameConfirm = new Rect();
 	private final Rect nameCancel = new Rect();
 	private @Nullable String namePendingPost;
+
+	private boolean deleteCollectionOpen;
+	private @Nullable String deleteCollectionName;
+	private final Rect deleteCollectionConfirm = new Rect();
+	private final Rect deleteCollectionCancel = new Rect();
+
+	// Right-click options for a collection: rename / cancel / delete.
+	private boolean collectionOptionsOpen;
+	private @Nullable String collectionOptionsName;
+	private final Rect collectionOptionsRename = new Rect();
+	private final Rect collectionOptionsDelete = new Rect();
+	private final Rect collectionOptionsCancel = new Rect();
+	private final Rect collectionOptionsBounds = new Rect();
+
+	// Rename modal with a text box pre-filled with the current name.
+	private boolean renameCollectionOpen;
+	private @Nullable String renameCollectionFrom;
+	private String renameInput = "";
+	private final Rect renameConfirm = new Rect();
+	private final Rect renameCancel = new Rect();
+	private final Rect renameBounds = new Rect();
 
 	// Creator profile: a grid filtered to one poster, with an Instagram-style header.
 	private @Nullable String profilePoster;
@@ -537,8 +592,14 @@ public class IndexScreen extends Screen {
 		labels.add("All saved");
 		labels.addAll(CollectionStore.names());
 
-		for (String label : labels) {
-			int width = this.font.width(Theme.bold(label)) + 12;
+		for (int idx = 0; idx < labels.size(); idx++) {
+			int width = this.font.width(Theme.bold(labels.get(idx))) + 12;
+
+			// Named collections carry a trash icon on the right, so reserve room for it.
+			if (idx > 0) {
+				width += TRASH_CELL_WIDTH;
+			}
+
 			x = this.wrapChip(x, width, firstRowLimit, limit, row);
 			Rect rect = new Rect();
 			rect.set(x, TOP_BAR_HEIGHT + 6 + row[0] * (CHIP_HEIGHT + CHIP_GAP), width, CHIP_HEIGHT);
@@ -608,13 +669,31 @@ public class IndexScreen extends Screen {
 			this.visible.add(entry);
 		}
 
-		Comparator<SchematicEntry> comparator = switch (this.sort) {
-			case TRENDING -> Comparator.comparingDouble(SchematicEntry::trendScore).reversed()
-					.thenComparing(Comparator.comparingLong(SchematicEntry::postedAt).reversed());
-			case NEWEST -> Comparator.comparingLong(SchematicEntry::postedAt).reversed();
-			case DOWNLOADS -> Comparator.comparingInt(SchematicEntry::downloads).reversed();
-			case LIKES -> Comparator.comparingInt(IndexScreen::likesOf).reversed();
-		};
+		Comparator<SchematicEntry> comparator;
+
+		// On the Saved page, "Newest" means most-recently added to Saved (or to the active
+		// collection), not the post's original upload date.
+		if (this.page == Page.SAVED && this.sort == Catalogue.Sort.NEWEST) {
+			java.util.List<String> order = this.activeCollection != null
+					? new java.util.ArrayList<>(CollectionStore.postIds(this.activeCollection))
+					: Bookmarks.savedOrder();
+			java.util.Map<String, Integer> rank = new java.util.HashMap<>();
+
+			for (int i = 0; i < order.size(); i++) {
+				rank.put(order.get(i), i);
+			}
+
+			comparator = Comparator.comparingInt((SchematicEntry e) -> rank.getOrDefault(e.id(), -1)).reversed();
+		} else {
+			comparator = switch (this.sort) {
+				case TRENDING -> Comparator.comparingDouble(SchematicEntry::trendScore).reversed()
+						.thenComparing(Comparator.comparingLong(SchematicEntry::postedAt).reversed());
+				case NEWEST -> Comparator.comparingLong(SchematicEntry::postedAt).reversed();
+				case DOWNLOADS -> Comparator.comparingInt(SchematicEntry::downloads).reversed();
+				case LIKES -> Comparator.comparingInt(IndexScreen::likesOf).reversed();
+			};
+		}
+
 		this.visible.sort(comparator);
 
 		this.shownCount = PAGE_SIZE;
@@ -763,6 +842,9 @@ public class IndexScreen extends Screen {
 		ImageStore.uploadPending();
 		SchematicPreview.uploadPending();
 
+		// Cleared each frame; whichever scrollbar draws will re-record its geometry below.
+		this.scrollbarChannel = SCROLLBAR_NONE;
+
 		if (Catalogue.revision() != this.catalogueRevision) {
 			this.catalogueRevision = Catalogue.revision();
 			this.refilter();
@@ -853,6 +935,187 @@ public class IndexScreen extends Screen {
 		if (this.nameInputOpen) {
 			this.renderNameInput(ctx, mouseX, mouseY);
 		}
+
+		if (this.collectionOptionsOpen) {
+			this.renderCollectionOptions(ctx, mouseX, mouseY);
+		}
+
+		if (this.renameCollectionOpen) {
+			this.renderRenameCollection(ctx, mouseX, mouseY);
+		}
+
+		if (this.deleteCollectionOpen) {
+			this.renderDeleteCollection(ctx, mouseX, mouseY);
+		}
+
+		// Arrow-key focus ring on the active confirmation/input modal's buttons.
+		Rect[] focusButtons = this.modalFocusButtons();
+
+		if (focusButtons != null && this.modalFocus >= 0 && this.modalFocus < focusButtons.length) {
+			Rect f = focusButtons[this.modalFocus];
+
+			if (f.width > 0 && f.height > 0) {
+				Theme.roundedOutline(ctx, f.x - 1, f.y - 1, f.width + 2, f.height + 2, Theme.RADIUS_PILL,
+						Theme.ACCENT_BRIGHT);
+			}
+		}
+	}
+
+	// Ordered focusable buttons of whichever confirmation/input modal is open (primary first),
+	// or null if no such modal is active. Enables arrow-key navigation and Enter-to-activate.
+	private Rect[] modalFocusButtons() {
+		if (this.errorOpen) {
+			String discord = RemoteContent.discord();
+			return discord != null && !discord.isBlank()
+					? new Rect[]{this.errorReport, this.errorClose}
+					: new Rect[]{this.errorClose};
+		}
+
+		if (this.renameCollectionOpen) {
+			return new Rect[]{this.renameConfirm, this.renameCancel};
+		}
+
+		if (this.collectionOptionsOpen) {
+			return new Rect[]{this.collectionOptionsRename, this.collectionOptionsCancel, this.collectionOptionsDelete};
+		}
+
+		if (this.deleteCollectionOpen) {
+			return new Rect[]{this.deleteCollectionConfirm, this.deleteCollectionCancel};
+		}
+
+		if (this.nameInputOpen) {
+			return new Rect[]{this.nameConfirm, this.nameCancel};
+		}
+
+		if (this.pendingOverwrite != null) {
+			return new Rect[]{this.overwriteReplace, this.overwriteCancel};
+		}
+
+		return null;
+	}
+
+	// Performs the action of the currently focused modal button (Enter key).
+	private void activateModalFocus() {
+		Rect[] buttons = this.modalFocusButtons();
+
+		if (buttons == null) {
+			return;
+		}
+
+		int i = this.modalFocus < 0 || this.modalFocus >= buttons.length ? 0 : this.modalFocus;
+
+		if (this.errorOpen) {
+			// Focus list may or may not include the report link, so dispatch by identity.
+			if (buttons[i] == this.errorReport) {
+				this.openLink(RemoteContent.discord());
+			} else {
+				this.errorOpen = false;
+			}
+		} else if (this.renameCollectionOpen) {
+			if (i == 0) {
+				this.confirmRename();
+			} else {
+				this.renameCollectionOpen = false;
+				this.renameCollectionFrom = null;
+			}
+		} else if (this.collectionOptionsOpen) {
+			String name = this.collectionOptionsName;
+
+			if (i == 0 && name != null) {
+				this.collectionOptionsOpen = false;
+				this.openRenameCollection(name);
+			} else if (i == 2) {
+				this.deleteCollectionName = name;
+				this.collectionOptionsOpen = false;
+				this.deleteCollectionOpen = true;
+				this.modalFocus = 0;
+			} else {
+				this.collectionOptionsOpen = false;
+				this.collectionOptionsName = null;
+			}
+		} else if (this.deleteCollectionOpen) {
+			if (i == 0) {
+				if (this.deleteCollectionName != null) {
+					CollectionStore.delete(this.deleteCollectionName);
+
+					if (this.deleteCollectionName.equals(this.activeCollection)) {
+						this.activeCollection = null;
+					}
+				}
+
+				this.deleteCollectionOpen = false;
+				this.deleteCollectionName = null;
+				this.layoutChips();
+				this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
+				this.refilter();
+			} else {
+				this.deleteCollectionOpen = false;
+				this.deleteCollectionName = null;
+			}
+		} else if (this.nameInputOpen) {
+			if (i == 0) {
+				this.confirmNameInput();
+			} else {
+				this.nameInputOpen = false;
+				this.namePendingPost = null;
+			}
+		} else if (this.pendingOverwrite != null) {
+			SchematicEntry entry = this.pendingOverwrite;
+			this.pendingOverwrite = null;
+
+			if (i == 0 && entry != null) {
+				this.beginDownload(entry);
+			} else {
+				this.status = "";
+			}
+		}
+
+		Theme.click(i == 0 ? 1.1F : 0.9F);
+	}
+
+	private void renderDeleteCollection(GuiGraphics ctx, int mouseX, int mouseY) {
+		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+
+		int pad = 16;
+		int cardWidth = Math.min(this.width - 40, 340);
+		int line = this.font.lineHeight;
+		String message = "Are you sure you want to delete \"" + this.deleteCollectionName
+				+ "\"? It will be lost forever - a very long time.";
+		List<String> lines = this.wrap(message, cardWidth - pad * 2 - 4, 4);
+
+		int cardHeight = pad + line + 8 + lines.size() * (line + 2) + 14 + FIELD_HEIGHT + pad;
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+		this.deleteBounds.set(x, y, cardWidth, cardHeight);
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+		ctx.fill(x + 1, y + 1, x + 5, y + cardHeight - 1, 0xFFD64545);
+
+		int tx = x + pad + 4;
+		int ty = y + pad;
+		Theme.text(ctx, this.font, Theme.bold("Delete collection"), tx, ty, Theme.TEXT);
+		ty += line + 8;
+
+		for (String row : lines) {
+			Theme.text(ctx, this.font, row, tx, ty, Theme.TEXT_ASH);
+			ty += line + 2;
+		}
+
+		int btnY = y + cardHeight - pad - FIELD_HEIGHT;
+		int cancelWidth = this.font.width(Theme.bold("Cancel")) + 20;
+		int deleteWidth = this.font.width(Theme.bold("Delete")) + 20;
+		this.deleteCollectionCancel.set(x + pad, btnY, cancelWidth, FIELD_HEIGHT);
+		this.deleteCollectionConfirm.set(x + cardWidth - pad - deleteWidth, btnY, deleteWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.deleteCollectionCancel, "Cancel", mouseX, mouseY, false);
+
+		boolean deleteHover = this.deleteCollectionConfirm.contains(mouseX, mouseY);
+		Theme.roundedRect(ctx, this.deleteCollectionConfirm.x, btnY, deleteWidth, FIELD_HEIGHT, Theme.RADIUS_PILL,
+				deleteHover ? 0xFFE05555 : 0xFFD64545);
+		String deleteLabel = Theme.bold("Delete");
+		Theme.text(ctx, this.font, deleteLabel,
+				this.deleteCollectionConfirm.x + (deleteWidth - this.font.width(deleteLabel)) / 2,
+				btnY + (FIELD_HEIGHT - line) / 2 + 1, Theme.ON_ACCENT);
 	}
 
 	private void renderNameInput(GuiGraphics ctx, int mouseX, int mouseY) {
@@ -864,6 +1127,7 @@ public class IndexScreen extends Screen {
 		int cardHeight = pad + line + 10 + FIELD_HEIGHT + 14 + FIELD_HEIGHT + pad;
 		int x = (this.width - cardWidth) / 2;
 		int y = (this.height - cardHeight) / 2;
+		this.nameBounds.set(x, y, cardWidth, cardHeight);
 
 		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
 		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
@@ -889,9 +1153,115 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.nameConfirm, "Create", mouseX, mouseY, true);
 	}
 
+	private void openCollectionOptions(String name) {
+		this.collectionOptionsOpen = true;
+		this.collectionOptionsName = name;
+		this.modalFocus = 0;
+	}
+
+	private void renderCollectionOptions(GuiGraphics ctx, int mouseX, int mouseY) {
+		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+
+		int pad = 16;
+		int cardWidth = Math.min(this.width - 40, 300);
+		int line = this.font.lineHeight;
+		int cardHeight = pad + line + 14 + FIELD_HEIGHT + pad;
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+		this.collectionOptionsBounds.set(x, y, cardWidth, cardHeight);
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+		Theme.text(ctx, this.font, Theme.bold(Theme.clip(this.font, this.collectionOptionsName, cardWidth - pad * 2)),
+				x + pad, y + pad, Theme.TEXT);
+
+		int btnY = y + cardHeight - pad - FIELD_HEIGHT;
+		int renameWidth = this.font.width(Theme.bold("Rename")) + 20;
+		int cancelWidth = this.font.width(Theme.bold("Cancel")) + 20;
+		int deleteWidth = this.font.width(Theme.bold("Delete")) + 20;
+		this.collectionOptionsRename.set(x + pad, btnY, renameWidth, FIELD_HEIGHT);
+		this.collectionOptionsCancel.set(x + pad + renameWidth + 8, btnY, cancelWidth, FIELD_HEIGHT);
+		this.collectionOptionsDelete.set(x + cardWidth - pad - deleteWidth, btnY, deleteWidth, FIELD_HEIGHT);
+
+		this.pillButton(ctx, this.collectionOptionsRename, "Rename", mouseX, mouseY, true);
+		this.pillButton(ctx, this.collectionOptionsCancel, "Cancel", mouseX, mouseY, false);
+
+		boolean deleteHover = this.collectionOptionsDelete.contains(mouseX, mouseY);
+		Theme.roundedRect(ctx, this.collectionOptionsDelete.x, btnY, deleteWidth, FIELD_HEIGHT, Theme.RADIUS_PILL,
+				deleteHover ? 0xFFE05555 : 0xFFD64545);
+		String deleteLabel = Theme.bold("Delete");
+		Theme.text(ctx, this.font, deleteLabel,
+				this.collectionOptionsDelete.x + (deleteWidth - this.font.width(deleteLabel)) / 2,
+				btnY + (FIELD_HEIGHT - line) / 2 + 1, Theme.ON_ACCENT);
+	}
+
+	private void openRenameCollection(String from) {
+		this.renameCollectionOpen = true;
+		this.renameCollectionFrom = from;
+		this.renameInput = from;
+		this.modalFocus = 0;
+	}
+
+	private void confirmRename() {
+		if (this.renameCollectionFrom == null) {
+			return;
+		}
+
+		String cleaned = CollectionStore.normalize(this.renameInput);
+
+		if (!cleaned.isEmpty() && CollectionStore.rename(this.renameCollectionFrom, cleaned)) {
+			if (this.renameCollectionFrom.equals(this.activeCollection)) {
+				this.activeCollection = cleaned;
+			}
+
+			this.layoutChips();
+			this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
+			this.refilter();
+		}
+
+		this.renameCollectionOpen = false;
+		this.renameCollectionFrom = null;
+	}
+
+	private void renderRenameCollection(GuiGraphics ctx, int mouseX, int mouseY) {
+		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+
+		int pad = 16;
+		int cardWidth = Math.min(this.width - 40, 300);
+		int line = this.font.lineHeight;
+		int cardHeight = pad + line + 10 + FIELD_HEIGHT + 14 + FIELD_HEIGHT + pad;
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+		this.renameBounds.set(x, y, cardWidth, cardHeight);
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+		Theme.text(ctx, this.font, Theme.bold("Rename collection"), x + pad, y + pad, Theme.TEXT);
+
+		int fieldY = y + pad + line + 10;
+		int fieldWidth = cardWidth - pad * 2;
+		Theme.roundedRect(ctx, x + pad, fieldY, fieldWidth, FIELD_HEIGHT, Theme.RADIUS_PILL, Theme.SURFACE_ELEVATED);
+		Theme.roundedOutline(ctx, x + pad, fieldY, fieldWidth, FIELD_HEIGHT, Theme.RADIUS_PILL, Theme.ACCENT);
+
+		boolean caret = System.currentTimeMillis() / 500 % 2 == 0;
+		String display = this.renameInput.isEmpty() && !caret ? "Name" : this.renameInput + (caret ? "_" : "");
+		int textColor = this.renameInput.isEmpty() && !caret ? Theme.TEXT_MUTE : Theme.TEXT;
+		Theme.text(ctx, this.font, Theme.clip(this.font, display, fieldWidth - 12), x + pad + 6,
+				fieldY + (FIELD_HEIGHT - line) / 2 + 1, textColor);
+
+		int btnY = fieldY + FIELD_HEIGHT + 14;
+		int cancelWidth = this.font.width(Theme.bold("Cancel")) + 20;
+		int renameWidth = this.font.width(Theme.bold("Rename")) + 20;
+		this.renameCancel.set(x + pad, btnY, cancelWidth, FIELD_HEIGHT);
+		this.renameConfirm.set(x + cardWidth - pad - renameWidth, btnY, renameWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.renameCancel, "Cancel", mouseX, mouseY, false);
+		this.pillButton(ctx, this.renameConfirm, "Rename", mouseX, mouseY, true);
+	}
+
 	public void showError(String code) {
 		this.errorCode = code;
 		this.errorOpen = true;
+		this.modalFocus = 0;
 	}
 
 	private void renderError(GuiGraphics ctx, int mouseX, int mouseY) {
@@ -911,6 +1281,7 @@ public class IndexScreen extends Screen {
 		int cardHeight = pad + line + 8 + line + 10 + desc.size() * (line + 2) + 8 + line + 16 + FIELD_HEIGHT + pad;
 		int x = (this.width - cardWidth) / 2;
 		int y = (this.height - cardHeight) / 2;
+		this.errorBounds.set(x, y, cardWidth, cardHeight);
 
 		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
 		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
@@ -1001,7 +1372,8 @@ public class IndexScreen extends Screen {
 			Theme.roundedRect(ctx, trackX, bodyTop, 2, viewport, 1, Theme.SURFACE_CARD);
 			int thumbHeight = Math.max(12, Math.round((float) viewport * viewport / contentHeight));
 			int thumbY = bodyTop + Math.round((viewport - thumbHeight) * (this.tosScroll / this.tosMaxScroll));
-			Theme.roundedRect(ctx, trackX, thumbY, 2, thumbHeight, 1, Theme.ACCENT_BRIGHT);
+			this.drawScrollThumb(ctx, SCROLLBAR_TOS, trackX, 2, thumbY, thumbHeight, 1, bodyTop, viewport,
+					Theme.ACCENT_BRIGHT);
 		}
 
 		int buttonY = y + cardHeight - pad - 16;
@@ -1599,9 +1971,15 @@ public class IndexScreen extends Screen {
 		List<String> names = CollectionStore.names();
 
 		for (int i = 0; i < this.collectionChips.size(); i++) {
-			String label = i == 0 ? "All saved" : (i - 1 < names.size() ? names.get(i - 1) : "");
-			boolean active = i == 0 ? this.activeCollection == null : label.equals(this.activeCollection);
-			this.chipPill(ctx, this.collectionChips.get(i), label, active, mouseX, mouseY);
+			Rect rect = this.collectionChips.get(i);
+
+			if (i == 0) {
+				this.chipPill(ctx, rect, "All saved", this.activeCollection == null, mouseX, mouseY);
+				continue;
+			}
+
+			String label = i - 1 < names.size() ? names.get(i - 1) : "";
+			this.namedCollectionChip(ctx, rect, label, label.equals(this.activeCollection), mouseX, mouseY);
 		}
 
 		this.chipPill(ctx, this.newCollectionChip, "+ New", false, mouseX, mouseY);
@@ -1621,6 +1999,34 @@ public class IndexScreen extends Screen {
 		Theme.text(ctx, this.font, Theme.bold(Theme.clip(this.font, label, rect.width - 8)), rect.x + 6,
 				rect.y + (CHIP_HEIGHT - this.font.lineHeight) / 2 + 1, active ? Theme.ON_ACCENT : Theme.TEXT_MUTE);
 		Theme.pop(ctx);
+	}
+
+	// A collection chip with a trash icon on the right; the icon turns red on hover.
+	private void namedCollectionChip(GuiGraphics ctx, Rect rect, String label, boolean active, int mouseX, int mouseY) {
+		boolean hovered = rect.contains(mouseX, mouseY);
+		int fill = active ? Theme.ACCENT : (hovered ? Theme.SURFACE_ELEVATED : Theme.SURFACE_CARD);
+		float hover = Theme.buttonHover(rect, hovered);
+		float scale = Theme.popScale(rect, 1.0F + Theme.HOVER_SCALE * hover);
+		Theme.pushScale(ctx, rect.x, rect.y, rect.width, rect.height, scale);
+		Theme.roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, Theme.RADIUS_PILL, fill);
+
+		int labelRoom = rect.width - 8 - TRASH_CELL_WIDTH;
+		Theme.text(ctx, this.font, Theme.bold(Theme.clip(this.font, label, labelRoom)), rect.x + 6,
+				rect.y + (CHIP_HEIGHT - this.font.lineHeight) / 2 + 1, active ? Theme.ON_ACCENT : Theme.TEXT_MUTE);
+
+		Rect trash = this.trashRect(rect);
+		boolean trashHovered = trash.contains(mouseX, mouseY);
+		int trashColor = trashHovered ? 0xFFE05555 : (active ? Theme.ON_ACCENT : Theme.TEXT_MUTE);
+		Theme.trashGlyph(ctx, trash.x + (trash.width - Theme.TRASH_GLYPH_WIDTH) / 2,
+				trash.y + (trash.height - 8) / 2, trashColor);
+		Theme.pop(ctx);
+	}
+
+	// Hit rect of the trash icon sitting in the right cell of a named collection chip.
+	private Rect trashRect(Rect chip) {
+		Rect r = new Rect();
+		r.set(chip.x + chip.width - TRASH_CELL_WIDTH, chip.y, TRASH_CELL_WIDTH, chip.height);
+		return r;
 	}
 
 	private void renderAddModeBanner(GuiGraphics ctx, int mouseX, int mouseY) {
@@ -1704,6 +2110,11 @@ public class IndexScreen extends Screen {
 			if (this.collectionMenuRects.get(i).contains(mouseX, mouseY)) {
 				boolean nowIn = CollectionStore.toggle(names.get(i), entry.id());
 				Theme.click(nowIn ? 1.2F : 0.9F);
+
+				if (this.page == Page.SAVED) {
+					this.refilter();
+				}
+
 				return true;
 			}
 		}
@@ -1830,9 +2241,24 @@ public class IndexScreen extends Screen {
 	}
 
 	private boolean clickCollectionChips(double mouseX, double mouseY) {
+		List<String> names = CollectionStore.names();
+
+		// Trash icon on a named chip opens the delete warning.
+		for (int i = 1; i < this.collectionChips.size(); i++) {
+			if (this.trashRect(this.collectionChips.get(i)).contains(mouseX, mouseY)) {
+				if (i - 1 < names.size()) {
+					this.deleteCollectionName = names.get(i - 1);
+					this.deleteCollectionOpen = true;
+					this.modalFocus = 0;
+					Theme.click(0.9F);
+				}
+
+				return true;
+			}
+		}
+
 		for (int i = 0; i < this.collectionChips.size(); i++) {
 			if (this.collectionChips.get(i).contains(mouseX, mouseY)) {
-				List<String> names = CollectionStore.names();
 				this.activeCollection = i == 0 ? null : (i - 1 < names.size() ? names.get(i - 1) : null);
 				Theme.click();
 				this.scroll = 0.0F;
@@ -1869,6 +2295,7 @@ public class IndexScreen extends Screen {
 		this.nameInputOpen = true;
 		this.nameInput = "";
 		this.namePendingPost = pendingPost;
+		this.modalFocus = 0;
 	}
 
 	private void confirmNameInput() {
@@ -1938,7 +2365,9 @@ public class IndexScreen extends Screen {
 				this.renderCard(ctx, card, x, y, mouseX, mouseY);
 
 				if (index == this.focusedCard) {
-					Theme.roundedOutline(ctx, x - 1, y - 1, this.cardWidth + 2, this.cardHeight + 2,
+					// Match the hover outline exactly (flush to the card) so the top edge isn't
+					// clipped by the grid scissor when the focused card is on the top row.
+					Theme.roundedOutline(ctx, x, y, this.cardWidth, this.cardHeight,
 							Theme.RADIUS_CARD, Theme.ACCENT_BRIGHT);
 				}
 
@@ -2084,7 +2513,92 @@ public class IndexScreen extends Screen {
 		int barHeight = Math.max(16, Math.round(trackHeight * (trackHeight / (trackHeight + this.maxScroll))));
 		int barY = this.gridTop + Math.round((trackHeight - barHeight) * (this.scroll / this.maxScroll));
 		int barX = Math.min(this.contentX + this.contentWidth + 2, this.width - 4);
-		Theme.roundedRect(ctx, barX, barY, 3, barHeight, 1, Theme.HAIRLINE);
+		this.drawScrollThumb(ctx, SCROLLBAR_MAIN, barX, 3, barY, barHeight, 1, this.gridTop, trackHeight, Theme.HAIRLINE);
+	}
+
+	// Draws a scrollbar thumb and records its geometry so it can be grabbed and dragged. The
+	// thumb brightens while it is being dragged.
+	private void drawScrollThumb(GuiGraphics ctx, int channel, int barX, int barWidth, int barY, int barHeight,
+			int radius, int trackTop, int trackHeight, int baseColor) {
+		this.scrollbarChannel = channel;
+		this.scrollbarX = barX;
+		this.scrollbarWidth = barWidth;
+		this.scrollbarThumbY = barY;
+		this.scrollbarThumbHeight = barHeight;
+		this.scrollbarTrackTop = trackTop;
+		this.scrollbarTrackHeight = trackHeight;
+		int color = this.draggingScrollbar && this.dragScrollChannel == channel ? lighten(baseColor) : baseColor;
+		Theme.roundedRect(ctx, barX, barY, barWidth, barHeight, radius, color);
+	}
+
+	// A brighter, more opaque version of a scrollbar colour, shown while the thumb is held.
+	private static int lighten(int argb) {
+		int a = Math.min(255, ((argb >>> 24) & 0xFF) + 80);
+		int r = Math.min(255, ((argb >> 16) & 0xFF) + 60);
+		int g = Math.min(255, ((argb >> 8) & 0xFF) + 60);
+		int b = Math.min(255, (argb & 0xFF) + 60);
+		return (a << 24) | (r << 16) | (g << 8) | b;
+	}
+
+	private boolean scrollbarOverlayBlocked() {
+		return this.detail != null || this.errorOpen || this.nameInputOpen || this.deleteCollectionOpen
+				|| this.collectionOptionsOpen || this.renameCollectionOpen || this.tutorialActive
+				|| this.designerWarnOpen || this.reportOpen || this.pendingOverwrite != null;
+	}
+
+	// Begins a scrollbar drag if the click landed on (or near) the thumb of the bar drawn this
+	// frame. A few pixels of horizontal slack make the thin bar easier to grab.
+	private boolean tryGrabScrollbar(double mouseX, double mouseY) {
+		if (this.scrollbarChannel == SCROLLBAR_NONE || this.scrollbarOverlayBlocked()) {
+			return false;
+		}
+
+		boolean inTrackX = mouseX >= this.scrollbarX - 4 && mouseX <= this.scrollbarX + this.scrollbarWidth + 4;
+
+		if (!inTrackX || mouseY < this.scrollbarTrackTop || mouseY > this.scrollbarTrackTop + this.scrollbarTrackHeight) {
+			return false;
+		}
+
+		this.draggingScrollbar = true;
+		this.dragScrollChannel = this.scrollbarChannel;
+
+		if (mouseY >= this.scrollbarThumbY && mouseY <= this.scrollbarThumbY + this.scrollbarThumbHeight) {
+			// Grabbed the thumb directly — keep the point under the cursor fixed while dragging.
+			this.scrollbarGrabOffset = (float) mouseY - this.scrollbarThumbY;
+		} else {
+			// Clicked the track — jump the thumb centre to the cursor, then drag from there.
+			this.scrollbarGrabOffset = this.scrollbarThumbHeight / 2.0F;
+			this.dragScrollbarTo(mouseY);
+		}
+
+		Theme.click(0.8F);
+		return true;
+	}
+
+	// Maps a cursor Y to a scroll value for the channel being dragged.
+	private void dragScrollbarTo(double mouseY) {
+		int travel = this.scrollbarTrackHeight - this.scrollbarThumbHeight;
+
+		if (travel <= 0) {
+			return;
+		}
+
+		float fraction = (float) ((mouseY - this.scrollbarGrabOffset - this.scrollbarTrackTop) / travel);
+		fraction = Math.max(0.0F, Math.min(1.0F, fraction));
+
+		switch (this.dragScrollChannel) {
+			case SCROLLBAR_MAIN -> this.scroll = fraction * this.maxScroll;
+			case SCROLLBAR_DASH -> this.dashScroll = fraction * this.dashMaxScroll;
+			case SCROLLBAR_TOS -> {
+				this.tosScroll = fraction * this.tosMaxScroll;
+
+				if (this.tosScroll >= this.tosMaxScroll - 0.5F) {
+					this.tosScrolledBottom = true;
+				}
+			}
+			default -> {
+			}
+		}
 	}
 
 	private void renderUpload(GuiGraphics ctx, int mouseX, int mouseY, float partialTick) {
@@ -2115,7 +2629,6 @@ public class IndexScreen extends Screen {
 				y += this.font.lineHeight + 6;
 			}
 
-			Theme.text(ctx, this.font, UploaderAccess.betaHint(), formX, y, Theme.TEXT_ASH);
 			return;
 		}
 
@@ -2381,7 +2894,21 @@ public class IndexScreen extends Screen {
 		int areaW = this.contentWidth - margin * 2;
 		int top = TOP_BAR_HEIGHT + 16;
 
-		Theme.text(ctx, this.font, Theme.bold("Signed in as " + UploaderAccess.profile()), areaX, top, Theme.TEXT);
+		String signedIn = "Signed in as " + UploaderAccess.profile();
+		Theme.text(ctx, this.font, Theme.bold(signedIn), areaX, top, Theme.TEXT);
+
+		String uploaderIgn = UploaderAccess.ign();
+
+		if (uploaderIgn != null && !uploaderIgn.isBlank()) {
+			int headX = areaX + this.font.width(Theme.bold(signedIn)) + 6;
+			int headY = top - 3;
+			Identifier head = ImageStore.avatar("https://mc-heads.net/avatar/" + Backend.encode(uploaderIgn) + "/64.png");
+
+			if (head != null) {
+				Theme.image(ctx, head, headX, headY, 14, 14, 64, 64);
+			}
+		}
+
 		this.signOutButton.set(areaX + areaW - 58, top - 4, 58, FIELD_HEIGHT);
 		this.pillButton(ctx, this.signOutButton, "Sign out", mouseX, mouseY, false);
 		this.dashUploadButton.set(areaX + areaW - 58 - 6 - 86, top - 4, 86, FIELD_HEIGHT);
@@ -2392,7 +2919,41 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
-		int y = top + 26;
+		// The whole page scrolls as one column: stats and graph at the top, then every post
+		// below at full size. Only the sign-in row above stays fixed.
+		int scrollTop = top + 26;
+		int scrollBottom = this.height - 6;
+		this.dashViewportTop = scrollTop;
+		this.dashViewportBottom = scrollBottom;
+
+		int tileH = 42;
+		int graphH = 150;
+		int gap = GUTTER;
+		int cols = Math.max(1, (areaW + gap) / (112 + gap));
+		int cw = (areaW - gap * (cols - 1)) / cols;
+		int ch = imageHeight(cw) + CAPTION_HEIGHT;
+
+		List<SchematicEntry> shown = new ArrayList<>();
+
+		for (SchematicEntry entry : this.myPosts) {
+			if (this.myFilter == Category.ALL || entry.category() == this.myFilter) {
+				shown.add(entry);
+			}
+		}
+
+		int uploadsHeaderH = this.font.lineHeight + 6;
+		int chipsH = this.measureFilterChipsHeight(areaX, areaW);
+		int postsH = shown.isEmpty()
+				? this.font.lineHeight
+				: ((shown.size() + cols - 1) / cols) * (ch + gap) - gap;
+
+		int contentHeight = tileH + 14 + graphH + 14 + uploadsHeaderH + chipsH + 6 + postsH;
+		this.dashMaxScroll = Math.max(0.0F, contentHeight - (scrollBottom - scrollTop));
+		this.dashScroll = Math.max(0.0F, Math.min(this.dashScroll, this.dashMaxScroll));
+
+		ctx.enableScissor(this.contentX, scrollTop, this.contentX + this.contentWidth, scrollBottom);
+
+		int y = scrollTop - Math.round(this.dashScroll);
 
 		String[][] tiles = {
 			{"Posts", SchematicEntry.compact(this.myPostsCount)},
@@ -2403,7 +2964,6 @@ public class IndexScreen extends Screen {
 		};
 		int tileGap = 8;
 		int tileW = (areaW - tileGap * (tiles.length - 1)) / tiles.length;
-		int tileH = 42;
 
 		for (int i = 0; i < tiles.length; i++) {
 			int tx = areaX + i * (tileW + tileGap);
@@ -2414,77 +2974,88 @@ public class IndexScreen extends Screen {
 
 		y += tileH + 14;
 
-		int gap = GUTTER;
-		int cols = Math.max(1, (areaW + gap) / (112 + gap));
-		int cw = (areaW - gap * (cols - 1)) / cols;
-		int ch = imageHeight(cw) + CAPTION_HEIGHT;
-
-		int uploadsReserve = this.font.lineHeight + 6 + CHIP_HEIGHT + 8 + ch;
-		int bottomLimit = this.height - 6;
-		int available = bottomLimit - y - uploadsReserve - 14;
-		int graphH = Math.max(96, Math.min(156, available));
-
 		this.renderLineGraph(ctx, areaX, y, areaW, graphH, mouseX, mouseY);
 		y += graphH + 14;
 
-		Theme.text(ctx, this.font, Theme.bold("Uploads"), areaX, y, Theme.TEXT_MUTE);
+		String uploadsLabel = this.selectedDashPost != null ? "Uploads - graphing one post" : "Uploads";
+		Theme.text(ctx, this.font, Theme.bold(uploadsLabel), areaX, y, Theme.TEXT_MUTE);
 		y += this.font.lineHeight + 6;
 
 		y = this.renderMyFilterChips(ctx, areaX, y, areaW, mouseX, mouseY) + 6;
 
-		List<SchematicEntry> shown = new ArrayList<>();
-
-		for (SchematicEntry entry : this.myPosts) {
-			if (this.myFilter == Category.ALL || entry.category() == this.myFilter) {
-				shown.add(entry);
-			}
-		}
-
-		int gridTop = y;
-		int gridBottom = bottomLimit;
+		this.myPostCardRects.clear();
+		this.myPostCardIds.clear();
 
 		if (shown.isEmpty()) {
-			String msg = this.myStatsLoading ? "Loading your posts..."
-					: (this.myPosts.isEmpty() ? "You haven't uploaded anything yet. Hit New post to start."
-					: "No posts in this category.");
-			Theme.text(ctx, this.font, Theme.clip(this.font, msg, areaW), areaX, gridTop, Theme.TEXT_ASH);
-			this.dashMaxScroll = 0.0F;
-			return;
-		}
+			String msg = this.myPosts.isEmpty()
+					? "You haven't uploaded anything yet. Hit New post to start."
+					: "No posts in this category.";
+			Theme.text(ctx, this.font, Theme.clip(this.font, msg, areaW), areaX, y, Theme.TEXT_ASH);
+		} else {
+			int savedW = this.cardWidth;
+			int savedH = this.cardHeight;
+			this.cardWidth = cw;
+			this.cardHeight = ch;
 
-		int rows = (shown.size() + cols - 1) / cols;
-		int contentHeight = rows * (ch + gap) - gap;
-		this.dashMaxScroll = Math.max(0.0F, contentHeight - (gridBottom - gridTop));
-		this.dashScroll = Math.max(0.0F, Math.min(this.dashScroll, this.dashMaxScroll));
+			for (int i = 0; i < shown.size(); i++) {
+				int col = i % cols;
+				int row = i / cols;
+				int cx = areaX + col * (cw + gap);
+				int cy = y + row * (ch + gap);
 
-		ctx.enableScissor(areaX, gridTop, areaX + areaW, gridBottom);
-		int savedW = this.cardWidth;
-		int savedH = this.cardHeight;
-		this.cardWidth = cw;
-		this.cardHeight = ch;
+				Rect rect = new Rect();
+				rect.set(cx, cy, cw, ch);
+				this.myPostCardRects.add(rect);
+				this.myPostCardIds.add(shown.get(i).id());
 
-		for (int i = 0; i < shown.size(); i++) {
-			int col = i % cols;
-			int row = i / cols;
-			int cx = areaX + col * (cw + gap);
-			int cy = gridTop + row * (ch + gap) - Math.round(this.dashScroll);
+				if (cy + ch >= scrollTop && cy <= scrollBottom) {
+					this.renderCard(ctx, shown.get(i), cx, cy, -999, -999);
 
-			if (cy + ch >= gridTop && cy <= gridBottom) {
-				this.renderCard(ctx, shown.get(i), cx, cy, -999, -999);
+					boolean selected = shown.get(i).id().equals(this.selectedDashPost);
+					boolean hovered = rect.contains(mouseX, mouseY)
+							&& mouseY >= scrollTop && mouseY <= scrollBottom;
+
+					if (selected) {
+						Theme.roundedOutline(ctx, cx, cy, cw, ch, Theme.RADIUS_CARD, Theme.ACCENT_BRIGHT);
+					} else if (hovered) {
+						Theme.roundedOutline(ctx, cx, cy, cw, ch, Theme.RADIUS_CARD, Theme.HAIRLINE);
+					}
+				}
 			}
+
+			this.cardWidth = savedW;
+			this.cardHeight = savedH;
 		}
 
-		this.cardWidth = savedW;
-		this.cardHeight = savedH;
 		ctx.disableScissor();
 
 		if (this.dashMaxScroll > 0.0F) {
-			int trackH = gridBottom - gridTop;
+			int trackH = scrollBottom - scrollTop;
 			int barH = Math.max(16, Math.round(trackH * (trackH / (trackH + this.dashMaxScroll))));
-			int barY = gridTop + Math.round((trackH - barH) * (this.dashScroll / this.dashMaxScroll));
+			int barY = scrollTop + Math.round((trackH - barH) * (this.dashScroll / this.dashMaxScroll));
 			int barX = Math.min(areaX + areaW + 2, this.width - 4);
-			Theme.roundedRect(ctx, barX, barY, 3, barH, 1, Theme.HAIRLINE);
+			this.drawScrollThumb(ctx, SCROLLBAR_DASH, barX, 3, barY, barH, 1, scrollTop, trackH, Theme.HAIRLINE);
 		}
+	}
+
+	// Height the upload filter chips will occupy at the given width (mirrors the wrap in
+	// renderMyFilterChips), used to lay out the scrolling dashboard before drawing.
+	private int measureFilterChipsHeight(int x, int w) {
+		int cx = x;
+		int rows = 0;
+
+		for (Category value : Category.values()) {
+			int chipW = this.font.width(Theme.bold(value.label())) + 12;
+
+			if (cx + chipW > x + w) {
+				cx = x;
+				rows++;
+			}
+
+			cx += chipW + CHIP_GAP;
+		}
+
+		return (rows + 1) * CHIP_HEIGHT + rows * CHIP_GAP;
 	}
 
 	private int renderMyFilterChips(GuiGraphics ctx, int x, int y, int w, int mouseX, int mouseY) {
@@ -2540,9 +3111,9 @@ public class IndexScreen extends Screen {
 		int plotH = plotBottom - plotY;
 
 		int lx = x + 10;
-		lx += this.legendChip(ctx, this.legendViewsRect, lx, legendY, "Views", Theme.ACCENT_BRIGHT, this.graphMode == 1, mouseX, mouseY);
-		lx += this.legendChip(ctx, this.legendDownloadsRect, lx, legendY, "Downloads", Theme.DOWNLOAD_FILL, this.graphMode == 2, mouseX, mouseY);
-		this.legendChip(ctx, this.legendLikesRect, lx, legendY, "Likes", 0xFFE0B341, this.graphMode == 3, mouseX, mouseY);
+		lx += this.legendChip(ctx, this.legendViewsRect, lx, legendY, "Views", Theme.STAT_VIEWS, this.graphMode == 1, mouseX, mouseY);
+		lx += this.legendChip(ctx, this.legendDownloadsRect, lx, legendY, "Downloads", Theme.STAT_DOWNLOADS, this.graphMode == 2, mouseX, mouseY);
+		this.legendChip(ctx, this.legendLikesRect, lx, legendY, "Likes", Theme.STAT_LIKES, this.graphMode == 3, mouseX, mouseY);
 
 		if (this.myDays.length < 2 || plotH < 12) {
 			String msg = "No activity yet.";
@@ -2554,15 +3125,21 @@ public class IndexScreen extends Screen {
 		boolean showDownloads = this.graphMode == 0 || this.graphMode == 2;
 		boolean showLikes = this.graphMode == 0 || this.graphMode == 3;
 
+		// When a post is selected on the dashboard, graph its history instead of the totals.
+		int[][] selected = this.selectedDashPost != null ? this.myPostSeries.get(this.selectedDashPost) : null;
+		int[] viewSeries = selected != null ? selected[0] : this.myViewSeries;
+		int[] downloadSeries = selected != null ? selected[1] : this.myDownloadSeries;
+		int[] likeSeries = selected != null ? selected[2] : this.myLikeSeries;
+
 		int rawMax = 1;
 		if (showViews) {
-			for (int v : this.myViewSeries) rawMax = Math.max(rawMax, v);
+			for (int v : viewSeries) rawMax = Math.max(rawMax, v);
 		}
 		if (showDownloads) {
-			for (int v : this.myDownloadSeries) rawMax = Math.max(rawMax, v);
+			for (int v : downloadSeries) rawMax = Math.max(rawMax, v);
 		}
 		if (showLikes) {
-			for (int v : this.myLikeSeries) rawMax = Math.max(rawMax, v);
+			for (int v : likeSeries) rawMax = Math.max(rawMax, v);
 		}
 		int max = niceCeil(rawMax);
 
@@ -2577,13 +3154,13 @@ public class IndexScreen extends Screen {
 		float animT = this.graphAnim();
 
 		if (showViews) {
-			this.plotSeries(ctx, this.myViewSeries, max, plotX, plotY, plotW, plotH, Theme.ACCENT_BRIGHT, animT);
+			this.plotSeries(ctx, viewSeries, max, plotX, plotY, plotW, plotH, Theme.STAT_VIEWS, animT);
 		}
 		if (showDownloads) {
-			this.plotSeries(ctx, this.myDownloadSeries, max, plotX, plotY, plotW, plotH, Theme.DOWNLOAD_FILL, animT);
+			this.plotSeries(ctx, downloadSeries, max, plotX, plotY, plotW, plotH, Theme.STAT_DOWNLOADS, animT);
 		}
 		if (showLikes) {
-			this.plotSeries(ctx, this.myLikeSeries, max, plotX, plotY, plotW, plotH, 0xFFE0B341, animT);
+			this.plotSeries(ctx, likeSeries, max, plotX, plotY, plotW, plotH, Theme.STAT_LIKES, animT);
 		}
 
 		Theme.text(ctx, this.font, shortDay(this.myDays[0]), plotX, plotBottom + plotToLabel, Theme.TEXT_ASH);
@@ -2600,23 +3177,23 @@ public class IndexScreen extends Screen {
 			List<String> rows = new ArrayList<>();
 			List<Integer> rowColors = new ArrayList<>();
 
-			if (showViews && hi < this.myViewSeries.length) {
-				int py = plotBottom - (int) Math.round((double) this.myViewSeries[hi] / max * plotH * animT);
-				this.graphDot(ctx, hx, py, Theme.ACCENT_BRIGHT);
-				rows.add("Views: " + SchematicEntry.compact(this.myViewSeries[hi]));
-				rowColors.add(Theme.ACCENT_BRIGHT);
+			if (showViews && hi < viewSeries.length) {
+				int py = plotBottom - (int) Math.round((double) viewSeries[hi] / max * plotH * animT);
+				this.graphDot(ctx, hx, py, Theme.STAT_VIEWS);
+				rows.add("Views: " + SchematicEntry.compact(viewSeries[hi]));
+				rowColors.add(Theme.STAT_VIEWS);
 			}
-			if (showDownloads && hi < this.myDownloadSeries.length) {
-				int py = plotBottom - (int) Math.round((double) this.myDownloadSeries[hi] / max * plotH * animT);
-				this.graphDot(ctx, hx, py, Theme.DOWNLOAD_FILL);
-				rows.add("Downloads: " + SchematicEntry.compact(this.myDownloadSeries[hi]));
-				rowColors.add(Theme.DOWNLOAD_FILL);
+			if (showDownloads && hi < downloadSeries.length) {
+				int py = plotBottom - (int) Math.round((double) downloadSeries[hi] / max * plotH * animT);
+				this.graphDot(ctx, hx, py, Theme.STAT_DOWNLOADS);
+				rows.add("Downloads: " + SchematicEntry.compact(downloadSeries[hi]));
+				rowColors.add(Theme.STAT_DOWNLOADS);
 			}
-			if (showLikes && hi < this.myLikeSeries.length) {
-				int py = plotBottom - (int) Math.round((double) this.myLikeSeries[hi] / max * plotH * animT);
-				this.graphDot(ctx, hx, py, 0xFFE0B341);
-				rows.add("Likes: " + SchematicEntry.compact(this.myLikeSeries[hi]));
-				rowColors.add(0xFFE0B341);
+			if (showLikes && hi < likeSeries.length) {
+				int py = plotBottom - (int) Math.round((double) likeSeries[hi] / max * plotH * animT);
+				this.graphDot(ctx, hx, py, Theme.STAT_LIKES);
+				rows.add("Likes: " + SchematicEntry.compact(likeSeries[hi]));
+				rowColors.add(Theme.STAT_LIKES);
 			}
 
 			String date = fullDay(this.myDays[hi]);
@@ -2807,7 +3384,7 @@ public class IndexScreen extends Screen {
 
 			try {
 				long span = java.time.temporal.ChronoUnit.DAYS.between(
-						java.time.LocalDate.of(2026, 8, 8), java.time.LocalDate.now()) + 1;
+						java.time.LocalDate.of(2026, 8, 10), java.time.LocalDate.now()) + 1;
 				days = (int) Math.max(7, Math.min(365, span));
 			} catch (Throwable e) {
 				days = 30;
@@ -2848,6 +3425,25 @@ public class IndexScreen extends Screen {
 			this.myDownloadSeries = toIntArray(series.getAsJsonArray("downloads"));
 			this.myLikeSeries = toIntArray(series.getAsJsonArray("likes"));
 
+			this.myPostSeries.clear();
+
+			if (data.has("postSeries") && data.get("postSeries").isJsonObject()) {
+				JsonObject perPost = data.getAsJsonObject("postSeries");
+
+				for (Map.Entry<String, JsonElement> entry : perPost.entrySet()) {
+					JsonObject s = entry.getValue().getAsJsonObject();
+					this.myPostSeries.put(entry.getKey(), new int[][]{
+							toIntArray(s.getAsJsonArray("views")),
+							toIntArray(s.getAsJsonArray("downloads")),
+							toIntArray(s.getAsJsonArray("likes")),
+					});
+				}
+			}
+
+			if (this.selectedDashPost != null && !this.myPostSeries.containsKey(this.selectedDashPost)) {
+				this.selectedDashPost = null;
+			}
+
 			this.myPosts.clear();
 
 			for (JsonElement element : data.getAsJsonArray("posts")) {
@@ -2860,7 +3456,7 @@ public class IndexScreen extends Screen {
 						p.get("downloads").getAsInt(), p.get("likes").getAsInt(), p.get("postedAt").getAsLong(),
 						"", 0, -1, -1, false,
 						p.has("thumbnailUrl") && !p.get("thumbnailUrl").isJsonNull() ? p.get("thumbnailUrl").getAsString() : null,
-						List.of(), null, null, 0L, false, 0.0));
+						List.of(), null, null, 0L, false, 0.0, p.has("views") ? p.get("views").getAsInt() : 0));
 			}
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.debug("Could not apply my stats", e);
@@ -3032,7 +3628,7 @@ public class IndexScreen extends Screen {
 			int barHeight = Math.max(16, Math.round(trackHeight * (trackHeight / (float) (trackHeight + this.maxScroll))));
 			int barY = top + Math.round((trackHeight - barHeight) * (this.scroll / this.maxScroll));
 			int barX = Math.min(this.contentX + this.contentWidth + 2, this.width - 4);
-			Theme.roundedRect(ctx, barX, barY, 3, barHeight, 1, Theme.HAIRLINE);
+			this.drawScrollThumb(ctx, SCROLLBAR_MAIN, barX, 3, barY, barHeight, 1, top, trackHeight, Theme.HAIRLINE);
 		}
 
 		int rightX = formX + formWidth + 24;
@@ -3287,7 +3883,7 @@ public class IndexScreen extends Screen {
 			int barHeight = Math.max(16, Math.round(trackHeight * (trackHeight / (trackHeight + this.maxScroll))));
 			int barY = top + Math.round((trackHeight - barHeight) * (this.scroll / this.maxScroll));
 			int barX = Math.min(x + width + 2, this.width - 4);
-			Theme.roundedRect(ctx, barX, barY, 3, barHeight, 1, Theme.HAIRLINE);
+			this.drawScrollThumb(ctx, SCROLLBAR_MAIN, barX, 3, barY, barHeight, 1, top, trackHeight, Theme.HAIRLINE);
 		}
 	}
 
@@ -3358,6 +3954,7 @@ public class IndexScreen extends Screen {
 		int x = (this.width - modalWidth) / 2;
 		int y = (this.height - modalHeight) / 2;
 		int pad = 12;
+		this.detailBounds.set(x, y, modalWidth, modalHeight);
 
 		Theme.roundedRect(ctx, x, y, modalWidth, modalHeight, Theme.RADIUS_MODAL, Theme.SURFACE_ELEVATED);
 
@@ -3465,6 +4062,13 @@ public class IndexScreen extends Screen {
 		line = this.metaRow(ctx, "Dimensions", entry.dimensionsLabel(), infoX, line, infoWidth) + 8;
 		line = this.metaRow(ctx, "Total Blocks", entry.blockCountLabel(), infoX, line, infoWidth) + 8;
 		line = this.metaRow(ctx, "Volume", entry.volumeLabel(), infoX, line, infoWidth) + 8;
+
+		Theme.text(ctx, this.font, "Views", infoX, line, Theme.TEXT_ASH);
+		String views = SchematicEntry.compact(entry.views());
+		int viewsWidth = this.font.width(views);
+		Theme.text(ctx, this.font, views, infoX + infoWidth - viewsWidth, line, Theme.TEXT);
+		Theme.eyeGlyph(ctx, infoX + infoWidth - viewsWidth - Theme.EYE_GLYPH_WIDTH - 3, line + 2, Theme.TEXT_MUTE);
+		line += this.font.lineHeight + 9;
 
 		Theme.text(ctx, this.font, "Downloads", infoX, line, Theme.TEXT_ASH);
 		String downloads = entry.downloadsLabel();
@@ -3628,6 +4232,7 @@ public class IndexScreen extends Screen {
 				+ reasonsToDivider + 1 + dividerToCancel + rowHeight + pad;
 		int x = (this.width - cardWidth) / 2;
 		int y = (this.height - cardHeight) / 2;
+		this.reportBounds.set(x, y, cardWidth, cardHeight);
 
 		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
 		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
@@ -3716,6 +4321,7 @@ public class IndexScreen extends Screen {
 		int cardHeight = pad + line + 4 + line + 8 + boxHeight + 6 + line + 10 + 16 + pad;
 		int x = (this.width - cardWidth) / 2;
 		int y = (this.height - cardHeight) / 2;
+		this.reportBounds.set(x, y, cardWidth, cardHeight);
 
 		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
 		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
@@ -3772,6 +4378,7 @@ public class IndexScreen extends Screen {
 		int cardHeight = 96;
 		int x = (this.width - cardWidth) / 2;
 		int y = (this.height - cardHeight) / 2;
+		this.overwriteBounds.set(x, y, cardWidth, cardHeight);
 
 		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
 		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
@@ -3824,6 +4431,7 @@ public class IndexScreen extends Screen {
 				+ toggleToDivider + 1 + dividerToButtons + buttonHeight + pad;
 		int x = (this.width - cardWidth) / 2;
 		int y = (this.height - cardHeight) / 2;
+		this.designerWarnBounds.set(x, y, cardWidth, cardHeight);
 
 		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
 		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
@@ -3883,6 +4491,13 @@ public class IndexScreen extends Screen {
 			this.designerWarnOpen = false;
 			Theme.click(1.1F);
 			this.beginUpload();
+			return;
+		}
+
+		// Clicking outside the card cancels (warnings default to cancel).
+		if (!this.designerWarnBounds.contains(mouseX, mouseY)) {
+			this.designerWarnOpen = false;
+			Theme.click(0.9F);
 		}
 	}
 
@@ -3925,10 +4540,14 @@ public class IndexScreen extends Screen {
 
 		this.registerButtonPress(mouseX, mouseY);
 
+		if (event.button() == 0 && this.tryGrabScrollbar(mouseX, mouseY)) {
+			return true;
+		}
+
 		if (this.errorOpen) {
 			if (this.errorReport.contains(mouseX, mouseY)) {
 				this.openLink(RemoteContent.discord());
-			} else if (this.errorClose.contains(mouseX, mouseY)) {
+			} else if (this.errorClose.contains(mouseX, mouseY) || !this.errorBounds.contains(mouseX, mouseY)) {
 				Theme.click(0.9F);
 				this.errorOpen = false;
 			}
@@ -3940,13 +4559,93 @@ public class IndexScreen extends Screen {
 			if (this.nameConfirm.contains(mouseX, mouseY)) {
 				Theme.click(1.1F);
 				this.confirmNameInput();
-			} else if (this.nameCancel.contains(mouseX, mouseY)) {
+			} else if (this.nameCancel.contains(mouseX, mouseY) || !this.nameBounds.contains(mouseX, mouseY)) {
 				Theme.click(0.9F);
 				this.nameInputOpen = false;
 				this.namePendingPost = null;
 			}
 
 			return true;
+		}
+
+		if (this.deleteCollectionOpen) {
+			if (this.deleteCollectionConfirm.contains(mouseX, mouseY)) {
+				Theme.click(0.9F);
+
+				if (this.deleteCollectionName != null) {
+					CollectionStore.delete(this.deleteCollectionName);
+
+					if (this.deleteCollectionName.equals(this.activeCollection)) {
+						this.activeCollection = null;
+					}
+				}
+
+				this.deleteCollectionOpen = false;
+				this.deleteCollectionName = null;
+				this.layoutChips();
+				this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
+				this.refilter();
+			} else if (this.deleteCollectionCancel.contains(mouseX, mouseY)) {
+				Theme.click(0.9F);
+				this.deleteCollectionOpen = false;
+				this.deleteCollectionName = null;
+			}
+
+			return true;
+		}
+
+		if (this.collectionOptionsOpen) {
+			if (this.collectionOptionsRename.contains(mouseX, mouseY)) {
+				Theme.click(1.1F);
+				String name = this.collectionOptionsName;
+				this.collectionOptionsOpen = false;
+
+				if (name != null) {
+					this.openRenameCollection(name);
+				}
+			} else if (this.collectionOptionsDelete.contains(mouseX, mouseY)) {
+				Theme.click(0.9F);
+				this.deleteCollectionName = this.collectionOptionsName;
+				this.collectionOptionsOpen = false;
+				this.deleteCollectionOpen = true;
+				this.modalFocus = 0;
+			} else if (this.collectionOptionsCancel.contains(mouseX, mouseY)
+					|| !this.collectionOptionsBounds.contains(mouseX, mouseY)) {
+				Theme.click(0.9F);
+				this.collectionOptionsOpen = false;
+				this.collectionOptionsName = null;
+			}
+
+			return true;
+		}
+
+		if (this.renameCollectionOpen) {
+			if (this.renameConfirm.contains(mouseX, mouseY)) {
+				Theme.click(1.1F);
+				this.confirmRename();
+			} else if (this.renameCancel.contains(mouseX, mouseY) || !this.renameBounds.contains(mouseX, mouseY)) {
+				Theme.click(0.9F);
+				this.renameCollectionOpen = false;
+				this.renameCollectionFrom = null;
+			}
+
+			return true;
+		}
+
+		if (event.button() == 1 && this.page == Page.SAVED && this.detail == null && !this.tosOpen
+				&& !this.tutorialActive && !this.designerWarnOpen) {
+			for (int i = 1; i < this.collectionChips.size(); i++) {
+				if (this.collectionChips.get(i).contains(mouseX, mouseY)) {
+					List<String> names = CollectionStore.names();
+
+					if (i - 1 < names.size()) {
+						this.openCollectionOptions(names.get(i - 1));
+						Theme.click(0.9F);
+					}
+
+					return true;
+				}
+			}
 		}
 
 		if (this.bannerActive && this.bannerEntering && this.detail == null && !this.tosOpen
@@ -4182,7 +4881,8 @@ public class IndexScreen extends Screen {
 		}
 
 		if (target == Page.UPLOAD) {
-			this.uploadFormOpen = false;
+			// Keep uploadFormOpen so returning to Upload lands back on the form you were
+			// filling out rather than resetting to the dashboard.
 			this.myStatsLoaded = false;
 			this.dashScroll = 0.0F;
 		}
@@ -4219,6 +4919,7 @@ public class IndexScreen extends Screen {
 		if (this.signOutButton.contains(mouseX, mouseY)) {
 			UploaderAccess.signOut();
 			this.formStatus = "";
+			this.selectedDashPost = null;
 			this.setFocused(null);
 			return true;
 		}
@@ -4259,6 +4960,20 @@ public class IndexScreen extends Screen {
 					this.dashScroll = 0.0F;
 					Theme.click(0.9F);
 					return true;
+				}
+			}
+
+			// Clicking a post selects it (or deselects if already selected); the graph then
+			// shows just that post's history.
+			if (mouseY >= this.dashViewportTop && mouseY <= this.dashViewportBottom) {
+				for (int i = 0; i < this.myPostCardRects.size() && i < this.myPostCardIds.size(); i++) {
+					if (this.myPostCardRects.get(i).contains(mouseX, mouseY)) {
+						String id = this.myPostCardIds.get(i);
+						this.selectedDashPost = id.equals(this.selectedDashPost) ? null : id;
+						this.graphAnimStart = System.currentTimeMillis();
+						Theme.click(this.selectedDashPost != null ? 1.1F : 0.9F);
+						return true;
+					}
 				}
 			}
 
@@ -4318,10 +5033,27 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
-		return this.focusField(this.titleBox, event, doubleClick, mouseX, mouseY)
+		if (this.focusField(this.titleBox, event, doubleClick, mouseX, mouseY)
 				|| this.focusField(this.thumbnailBox, event, doubleClick, mouseX, mouseY)
 				|| this.focusField(this.designerBox, event, doubleClick, mouseX, mouseY)
-				|| this.focusField(this.descriptionBox, event, doubleClick, mouseX, mouseY);
+				|| this.focusField(this.descriptionBox, event, doubleClick, mouseX, mouseY)) {
+			return true;
+		}
+
+		// Clicking empty space steps out of any text box, so Ctrl+V pastes a schematic
+		// link/image instead of typing into a field.
+		this.clearFormFocus();
+		return true;
+	}
+
+	private void clearFormFocus() {
+		this.setFocused(null);
+
+		for (EditBox box : new EditBox[]{this.codeBox, this.titleBox, this.thumbnailBox, this.designerBox, this.descriptionBox}) {
+			if (box != null) {
+				box.setFocused(false);
+			}
+		}
 	}
 
 	private boolean clickSettings(double mouseX, double mouseY) {
@@ -4569,6 +5301,7 @@ public class IndexScreen extends Screen {
 
 			if (!alreadyDone && Files.exists(Download.resolveTarget(this.downloadFileName(entry)))) {
 				this.pendingOverwrite = entry;
+				this.modalFocus = 0;
 				Theme.click(0.9F);
 				return;
 			}
@@ -4693,6 +5426,7 @@ public class IndexScreen extends Screen {
 					this.designerBox.setValue("");
 					this.descriptionBox.setValue("");
 					this.formStatus = "";
+					this.uploadFormOpen = false;
 					Catalogue.refresh();
 					this.switchPage(Page.BROWSE);
 				} else if (result.message() != null && !result.message().isBlank()) {
@@ -4841,7 +5575,9 @@ public class IndexScreen extends Screen {
 			return;
 		}
 
-		if (this.detailClose.contains(mouseX, mouseY) || this.detailCornerClose.contains(mouseX, mouseY)) {
+		// The close buttons, or a click on the scrim outside the modal card, dismiss it.
+		if (this.detailClose.contains(mouseX, mouseY) || this.detailCornerClose.contains(mouseX, mouseY)
+				|| !this.detailBounds.contains(mouseX, mouseY)) {
 			Theme.click(0.9F);
 			this.detail = null;
 			this.collectionMenuOpen = false;
@@ -4921,7 +5657,7 @@ public class IndexScreen extends Screen {
 			}
 		}
 
-		if (this.reportCancel.contains(mouseX, mouseY)) {
+		if (this.reportCancel.contains(mouseX, mouseY) || !this.reportBounds.contains(mouseX, mouseY)) {
 			this.reportOpen = false;
 			Theme.click(0.9F);
 		}
@@ -4930,6 +5666,12 @@ public class IndexScreen extends Screen {
 	private void clickReportContext(double mouseX, double mouseY) {
 		if (this.reportSubmit.contains(mouseX, mouseY)) {
 			this.submitReport();
+		} else if (!this.reportBounds.contains(mouseX, mouseY)) {
+			// Clicking outside the card cancels the report.
+			this.reportContextOpen = false;
+			this.reportReasonIndex = -1;
+			this.reportContext = "";
+			Theme.click(0.9F);
 		}
 	}
 
@@ -4958,7 +5700,9 @@ public class IndexScreen extends Screen {
 			if (entry != null) {
 				this.beginDownload(entry);
 			}
-		} else if (this.overwriteCancel.contains(mouseX, mouseY)) {
+		} else if (this.overwriteCancel.contains(mouseX, mouseY)
+				|| !this.overwriteBounds.contains(mouseX, mouseY)) {
+			// Outside the card counts as cancel.
 			this.pendingOverwrite = null;
 			Theme.click(0.9F);
 			this.status = "";
@@ -5035,6 +5779,11 @@ public class IndexScreen extends Screen {
 
 	@Override
 	public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
+		if (this.draggingScrollbar) {
+			this.dragScrollbarTo(event.y());
+			return true;
+		}
+
 		if (this.draggingLayer && this.detail != null && this.detailModel) {
 			this.setLayerFromMouse(event.x());
 			return true;
@@ -5053,6 +5802,13 @@ public class IndexScreen extends Screen {
 	public boolean mouseReleased(MouseButtonEvent event) {
 		this.orbiting = false;
 		this.draggingLayer = false;
+
+		if (this.draggingScrollbar) {
+			this.draggingScrollbar = false;
+			this.dragScrollChannel = SCROLLBAR_NONE;
+			return true;
+		}
+
 		return super.mouseReleased(event);
 	}
 
@@ -5136,6 +5892,14 @@ public class IndexScreen extends Screen {
 		if (this.nameInputOpen) {
 			if (event.codepoint() >= ' ' && this.nameInput.length() < 40) {
 				this.nameInput += event.codepointAsString();
+			}
+
+			return true;
+		}
+
+		if (this.renameCollectionOpen) {
+			if (event.codepoint() >= ' ' && this.renameInput.length() < 40) {
+				this.renameInput += event.codepointAsString();
 			}
 
 			return true;
@@ -5333,6 +6097,31 @@ public class IndexScreen extends Screen {
 
 	@Override
 	public boolean keyPressed(KeyEvent event) {
+		// Arrow keys move focus between the buttons of the active confirmation/input modal;
+		// Enter activates the focused one. Other keys fall through to the per-modal handlers.
+		Rect[] modalButtons = this.modalFocusButtons();
+
+		if (modalButtons != null) {
+			switch (event.key()) {
+				case 262, 264 -> { // right / down
+					this.modalFocus = (Math.max(0, this.modalFocus) + 1) % modalButtons.length;
+					Theme.click();
+					return true;
+				}
+				case 263, 265 -> { // left / up
+					this.modalFocus = (Math.max(0, this.modalFocus) + modalButtons.length - 1) % modalButtons.length;
+					Theme.click();
+					return true;
+				}
+				case 257, 335 -> { // enter
+					this.activateModalFocus();
+					return true;
+				}
+				default -> {
+				}
+			}
+		}
+
 		if (this.errorOpen) {
 			if (event.key() == 256) {
 				this.errorOpen = false;
@@ -5355,6 +6144,43 @@ public class IndexScreen extends Screen {
 				}
 				default -> {
 				}
+			}
+
+			return true;
+		}
+
+		if (this.renameCollectionOpen) {
+			switch (event.key()) {
+				case 259 -> {
+					if (!this.renameInput.isEmpty()) {
+						this.renameInput = this.renameInput.substring(0, this.renameInput.length() - 1);
+					}
+				}
+				case 257, 335 -> this.confirmRename();
+				case 256 -> {
+					this.renameCollectionOpen = false;
+					this.renameCollectionFrom = null;
+				}
+				default -> {
+				}
+			}
+
+			return true;
+		}
+
+		if (this.collectionOptionsOpen) {
+			if (event.key() == 256) {
+				this.collectionOptionsOpen = false;
+				this.collectionOptionsName = null;
+			}
+
+			return true;
+		}
+
+		if (this.deleteCollectionOpen) {
+			if (event.key() == 256) {
+				this.deleteCollectionOpen = false;
+				this.deleteCollectionName = null;
 			}
 
 			return true;

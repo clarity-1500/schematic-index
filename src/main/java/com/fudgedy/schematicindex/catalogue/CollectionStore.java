@@ -62,6 +62,26 @@ public final class CollectionStore {
 		}
 	}
 
+	public static synchronized boolean rename(String from, String to) {
+		ensureLoaded();
+		String cleaned = normalize(to);
+
+		if (cleaned.isEmpty() || !DATA.containsKey(from) || (DATA.containsKey(cleaned) && !cleaned.equals(from))) {
+			return false;
+		}
+
+		Map<String, LinkedHashSet<String>> rebuilt = new LinkedHashMap<>();
+
+		for (Map.Entry<String, LinkedHashSet<String>> entry : DATA.entrySet()) {
+			rebuilt.put(entry.getKey().equals(from) ? cleaned : entry.getKey(), entry.getValue());
+		}
+
+		DATA.clear();
+		DATA.putAll(rebuilt);
+		save();
+		return true;
+	}
+
 	public static synchronized Set<String> postIds(String name) {
 		ensureLoaded();
 		LinkedHashSet<String> set = DATA.get(name);

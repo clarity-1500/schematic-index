@@ -21,6 +21,12 @@ public final class Theme {
 	public static final int DOWNLOAD_FILL = 0xFF6FD9AE;
 	public static final int ON_ACCENT = 0xFFFFFFFF;
 
+	// Distinct hues for the three dashboard graph series so downloads no longer blends into the
+	// green of views, and likes reads as a warm heart red.
+	public static final int STAT_VIEWS = 0xFF3FA87F;      // green
+	public static final int STAT_DOWNLOADS = 0xFF5B9BF3;  // blue
+	public static final int STAT_LIKES = 0xFFE85D78;      // heart red, gently pink
+
 	public static final int BACKDROP = 0xFF0F1114;
 	public static final int SURFACE = 0xFF171A1E;
 	public static final int SURFACE_CARD = 0xFF1E2227;
@@ -350,6 +356,27 @@ public final class Theme {
 	}
 
 	public static final int DOWNLOAD_GLYPH_WIDTH = 5;
+
+	public static void eyeGlyph(GuiGraphics ctx, int x, int y, int color) {
+		ctx.fill(x + 2, y, x + 5, y + 1, color);
+		ctx.fill(x + 1, y + 1, x + 2, y + 4, color);
+		ctx.fill(x + 5, y + 1, x + 6, y + 4, color);
+		ctx.fill(x, y + 2, x + 1, y + 3, color);
+		ctx.fill(x + 6, y + 2, x + 7, y + 3, color);
+		ctx.fill(x + 2, y + 4, x + 5, y + 5, color);
+		ctx.fill(x + 3, y + 2, x + 4, y + 3, color);
+	}
+
+	public static final int EYE_GLYPH_WIDTH = 7;
+
+	// A small trash-bin glyph: handle, lid, then the body.
+	public static void trashGlyph(GuiGraphics ctx, int x, int y, int color) {
+		ctx.fill(x + 2, y, x + 5, y + 1, color);       // lid handle
+		ctx.fill(x, y + 1, x + 7, y + 2, color);        // lid
+		ctx.fill(x + 1, y + 2, x + 6, y + 8, color);    // body
+	}
+
+	public static final int TRASH_GLYPH_WIDTH = 7;
 
 	public static void click(float pitch) {
 		if (!Settings.sounds()) {

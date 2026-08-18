@@ -195,7 +195,7 @@ public final class Backend {
 		}
 	}
 
-	public static @Nullable String checkCode(String code) {
+	public static @Nullable JsonObject uploaderInfo(String code) {
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + "/uploader"))
 					.timeout(Duration.ofSeconds(10))
@@ -209,10 +209,15 @@ public final class Backend {
 			}
 
 			JsonObject body = JsonParser.parseString(response.body()).getAsJsonObject();
-			return body.has("valid") && body.get("valid").getAsBoolean() ? str(body, "displayName") : null;
+			return body.has("valid") && body.get("valid").getAsBoolean() ? body : null;
 		} catch (Throwable e) {
 			return null;
 		}
+	}
+
+	public static @Nullable String checkCode(String code) {
+		JsonObject body = uploaderInfo(code);
+		return body != null ? str(body, "displayName") : null;
 	}
 
 	public record UploadResult(int status, @Nullable String message) {
@@ -348,7 +353,7 @@ public final class Backend {
 				intOf(o, "blockCount"), intOf(o, "downloads"), intOf(o, "likes"), longOf(o, "postedAt"),
 				str(o, "description"), imageUrls.size(), 0, slot, false,
 				str(o, "thumbnailUrl"), imageUrls, fileUrl, str(o, "fileHash"), longOf(o, "fileSize"),
-				boolOf(o, "liked"), doubleOf(o, "trendScore"));
+				boolOf(o, "liked"), doubleOf(o, "trendScore"), intOf(o, "views"));
 	}
 
 	public static NewsFeed.Entry parseNews(JsonObject o) {

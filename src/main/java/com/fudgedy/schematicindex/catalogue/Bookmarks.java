@@ -8,7 +8,9 @@ import java.io.Reader;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Properties;
 import java.util.Set;
 
@@ -27,6 +29,12 @@ public final class Bookmarks {
 	public static boolean isLiked(String id) {
 		ensureLoaded();
 		return LIKED.contains(id);
+	}
+
+	// Saved post ids in the order they were saved (oldest first).
+	public static List<String> savedOrder() {
+		ensureLoaded();
+		return new ArrayList<>(SAVED);
 	}
 
 	public static boolean toggleLike(String id) {
