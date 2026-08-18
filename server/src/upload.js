@@ -73,6 +73,16 @@ function requireCode(req, res, next) {
   next();
 }
 
+// The Discord bot posts on behalf of a member using a shared secret instead of an uploader code.
+function requireBotKey(req, res, next) {
+  const expected = process.env.BOT_UPLOAD_KEY;
+
+  if (!expected) return res.status(503).json({ error: 'no_bot_key' });
+  if ((req.get('X-Bot-Key') || '') !== expected) return res.status(403).json({ error: 'bad_bot_key' });
+
+  next();
+}
+
 async function readLitematic(buffer) {
   try {
     const { parsed } = await nbt.parse(buffer);
@@ -349,6 +359,78 @@ export function registerUploadRoutes(app) {
     } catch (e) {
       cleanup();
       console.error('[upload] failed', e);
+      res.status(500).json({ error: 'upload_failed', message: 'The upload could not be processed.' });
+    }
+  });
+
+  // Same upload pipeline as /upload, but the Discord bot supplies the poster/designer directly
+  // (there is no uploader code) and authenticates with the shared bot key.
+  app.post('/bot/upload', requireBotKey, upload, async (req, res) => {
+    const schematic = req.files?.schematic?.[0];
+    const images = req.files?.images ?? [];
+    const temps = [schematic, ...images].filter(Boolean).map((f) => f.path);
+    const cleanup = () => Promise.all(temps.map((p) => fs.promises.unlink(p).catch(() => {})));
+    const fail = (status, error, message) => { cleanup(); return res.status(status).json({ error, message }); };
+
+    try {
+      const poster = String(req.body.poster || '').trim();
+      const title = String(req.body.title || '').trim();
+      const category = String(req.body.category || '').toUpperCase();
+
+      if (!poster) return fail(400, 'bad_poster', 'A poster is required.');
+      if (!schematic) return fail(400, 'no_schematic', 'A .litematic file is required.');
+      if (!schematic.originalname.toLowerCase().endsWith('.litematic')) return fail(400, 'bad_file', 'The schematic must be a .litematic file.');
+      if (!title) return fail(400, 'no_title', 'A title is required.');
+      if (!CATEGORIES.has(category)) return fail(400, 'bad_category', 'Unknown category.');
+      if (images.length < 1 || images.length > MAX_IMAGES) return fail(400, 'bad_images', `Attach 1 to ${MAX_IMAGES} images.`);
+
+      for (const img of images) {
+        if (!imageExtension(img.mimetype)) return fail(400, 'bad_image_type', 'Images must be PNG or JPG.');
+        if (img.size > MAX_IMAGE) return fail(413, 'image_too_large', 'An image is over 25 MB.');
+      }
+
+      const id = crypto.randomBytes(8).toString('hex');
+      const fileKey = `sch/${id}.litematic`;
+
+      const original = await fs.promises.readFile(schematic.path);
+      const dims = await readLitematic(original);
+
+      // Reject a schematic whose block data already exists, regardless of its name/uploader.
+      const cHash = await contentHash(original);
+
+      if (cHash && postByContentHash.get(cHash)) {
+        return fail(409, 'duplicate', 'This schematic has already been uploaded.');
+      }
+
+      const stamped = await stampLitematic(original, title);
+      const fileHash = 'sha256:' + crypto.createHash('sha256').update(stamped).digest('hex');
+
+      await fs.promises.writeFile(path.join(paths.files, fileKey), stamped);
+      await fs.promises.unlink(schematic.path).catch(() => {});
+
+      const imageKeys = [];
+      for (let i = 0; i < images.length; i++) {
+        const key = `img/${id}_${i}.${imageExtension(images[i].mimetype)}`;
+        await fs.promises.rename(images[i].path, path.join(paths.files, key));
+        imageKeys.push(key);
+      }
+
+      insertPost.run(
+        id, title, null, poster,
+        String(req.body.designer || '').trim() || null, category, dims.x, dims.y, dims.z, dims.blocks,
+        Date.now(), String(req.body.description || '').trim() || null, imageKeys[0], fileKey, fileHash,
+        stamped.length, null, (req.get('X-Device-Token') || '').trim() || null,
+        req.ip || null, cHash,
+      );
+
+      imageKeys.forEach((key, i) => insertImage.run(id, i, key));
+      invalidatePosts();
+
+      const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(id);
+      res.status(201).json(serializePost(row, ''));
+    } catch (e) {
+      cleanup();
+      console.error('[bot/upload] failed', e);
       res.status(500).json({ error: 'upload_failed', message: 'The upload could not be processed.' });
     }
   });
