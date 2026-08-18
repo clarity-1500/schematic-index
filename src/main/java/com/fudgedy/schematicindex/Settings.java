@@ -15,12 +15,15 @@ public final class Settings {
 	private static final String FILE_NAME = SchematicIndexMod.MOD_ID + ".properties";
 
 	private static final String KEY_SOUNDS = "sound_effects";
+	private static final String KEY_UI_VOLUME = "ui_volume";
 	private static final String KEY_CONFIRM_OVERWRITE = "confirm_overwrite";
 	private static final String KEY_DOWNLOAD_DIR = "download_directory";
 	private static final String KEY_GRID_DENSITY = "grid_density";
 	private static final String KEY_TUTORIAL_SEEN = "tutorial_seen";
 	private static final String KEY_TOASTS = "toasts";
 	private static final String KEY_NOTIFICATIONS = "notifications";
+	private static final String KEY_CREATOR_ALERTS = "creator_alerts";
+	private static final String KEY_NOTIFICATIONS_SEEN = "notifications_seen_at";
 	private static final String KEY_DEVICE_TOKEN = "device_token";
 	private static final String KEY_TERMS = "terms_accepted";
 	private static final String KEY_SKIP_DESIGNER_WARNING = "skip_designer_warning";
@@ -31,6 +34,7 @@ public final class Settings {
 	private static final String OFFICIAL_API = "https://schematic-index-production.up.railway.app";
 
 	private static boolean sounds = true;
+	private static int uiVolume = 100;
 	private static boolean confirmOverwrite = true;
 
 	private static @Nullable String deviceToken;
@@ -45,6 +49,8 @@ public final class Settings {
 	private static boolean toasts = true;
 
 	private static boolean notifications = true;
+	private static boolean creatorAlerts = true;
+	private static long notificationsSeenAt;
 	private static @Nullable Path customDownloadDirectory;
 
 	private static int gridDensity;
@@ -65,6 +71,24 @@ public final class Settings {
 	public static void toggleSounds() {
 		sounds = !sounds;
 		save();
+	}
+
+	// Master UI sound volume as a percentage (0-100).
+	public static int uiVolume() {
+		return uiVolume;
+	}
+
+	public static float uiVolumeFraction() {
+		return uiVolume / 100.0F;
+	}
+
+	public static void setUiVolume(int percent) {
+		int clamped = Math.max(0, Math.min(100, percent));
+
+		if (clamped != uiVolume) {
+			uiVolume = clamped;
+			save();
+		}
 	}
 
 	public static void toggleConfirmOverwrite() {
@@ -101,6 +125,27 @@ public final class Settings {
 	public static void toggleNotifications() {
 		notifications = !notifications;
 		save();
+	}
+
+	// Follow & like alerts for signed-in uploaders (their own posts).
+	public static boolean creatorAlerts() {
+		return creatorAlerts;
+	}
+
+	public static void toggleCreatorAlerts() {
+		creatorAlerts = !creatorAlerts;
+		save();
+	}
+
+	public static long notificationsSeenAt() {
+		return notificationsSeenAt;
+	}
+
+	public static void setNotificationsSeenAt(long at) {
+		if (at > notificationsSeenAt) {
+			notificationsSeenAt = at;
+			save();
+		}
 	}
 
 	public static String deviceToken() {
@@ -238,11 +283,14 @@ public final class Settings {
 		}
 
 		sounds = parse(properties.getProperty(KEY_SOUNDS), true);
+		uiVolume = Math.max(0, Math.min(100, parseInt(properties.getProperty(KEY_UI_VOLUME), 100)));
 		confirmOverwrite = parse(properties.getProperty(KEY_CONFIRM_OVERWRITE), true);
 		gridDensity = Math.max(-1, Math.min(1, parseInt(properties.getProperty(KEY_GRID_DENSITY), 0)));
 		tutorialSeen = parse(properties.getProperty(KEY_TUTORIAL_SEEN), false);
 		toasts = parse(properties.getProperty(KEY_TOASTS), true);
 		notifications = parse(properties.getProperty(KEY_NOTIFICATIONS), true);
+		creatorAlerts = parse(properties.getProperty(KEY_CREATOR_ALERTS), true);
+		notificationsSeenAt = parseLong(properties.getProperty(KEY_NOTIFICATIONS_SEEN), 0L);
 		deviceToken = properties.getProperty(KEY_DEVICE_TOKEN, "");
 		termsAccepted = parse(properties.getProperty(KEY_TERMS), false);
 		skipDesignerWarning = parse(properties.getProperty(KEY_SKIP_DESIGNER_WARNING), false);
@@ -258,11 +306,14 @@ public final class Settings {
 		Path path = FabricLoader.getInstance().getConfigDir().resolve(FILE_NAME);
 		Properties properties = new Properties();
 		properties.setProperty(KEY_SOUNDS, Boolean.toString(sounds));
+		properties.setProperty(KEY_UI_VOLUME, Integer.toString(uiVolume));
 		properties.setProperty(KEY_CONFIRM_OVERWRITE, Boolean.toString(confirmOverwrite));
 		properties.setProperty(KEY_GRID_DENSITY, Integer.toString(gridDensity));
 		properties.setProperty(KEY_TUTORIAL_SEEN, Boolean.toString(tutorialSeen));
 		properties.setProperty(KEY_TOASTS, Boolean.toString(toasts));
 		properties.setProperty(KEY_NOTIFICATIONS, Boolean.toString(notifications));
+		properties.setProperty(KEY_CREATOR_ALERTS, Boolean.toString(creatorAlerts));
+		properties.setProperty(KEY_NOTIFICATIONS_SEEN, Long.toString(notificationsSeenAt));
 		properties.setProperty(KEY_TERMS, Boolean.toString(termsAccepted));
 		properties.setProperty(KEY_SKIP_DESIGNER_WARNING, Boolean.toString(skipDesignerWarning));
 		properties.setProperty(KEY_TERMS_VERSION, Integer.toString(cachedTermsVersion));
@@ -305,6 +356,18 @@ public final class Settings {
 
 		try {
 			return Integer.parseInt(value.trim());
+		} catch (NumberFormatException e) {
+			return fallback;
+		}
+	}
+
+	private static long parseLong(String value, long fallback) {
+		if (value == null) {
+			return fallback;
+		}
+
+		try {
+			return Long.parseLong(value.trim());
 		} catch (NumberFormatException e) {
 			return fallback;
 		}

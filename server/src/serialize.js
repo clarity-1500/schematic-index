@@ -5,6 +5,8 @@ import { getJsonKv } from './content.js';
 const imagesStmt = db.prepare('SELECT file_key FROM post_images WHERE post_id = ? ORDER BY position');
 const likedStmt = db.prepare('SELECT 1 FROM likes WHERE post_id = ? AND token = ?');
 const viewsStmt = db.prepare('SELECT COUNT(*) AS n FROM views WHERE post_id = ?');
+const starStmt = db.prepare('SELECT COUNT(*) n, COALESCE(AVG(value), 0) avg FROM stars WHERE post_id = ?');
+const myStarStmt = db.prepare('SELECT value FROM stars WHERE post_id = ? AND token = ?');
 
 // Trending = a recent surge, not lifetime popularity: only activity in the last
 // window counts, so an old post with old likes scores 0 while a fresh burst ranks high.
@@ -47,6 +49,8 @@ export function isLiked(postId, token) {
 
 export function serializePost(row, token) {
   const imageUrls = imagesStmt.all(row.id).map((i) => fileUrl(i.file_key)).filter(Boolean);
+  const stars = starStmt.get(row.id);
+  const myStar = token ? myStarStmt.get(row.id, token) : null;
 
   return {
     id: row.id,
@@ -69,6 +73,9 @@ export function serializePost(row, token) {
     fileSize: row.file_size,
     liked: isLiked(row.id, token),
     trendScore: trendScore(row.id),
+    starAvg: stars.avg / 2,
+    starCount: stars.n,
+    myStars: myStar ? myStar.value : 0,
   };
 }
 

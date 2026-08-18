@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 public final class SchematicPreview {
@@ -83,7 +84,7 @@ public final class SchematicPreview {
 	private static boolean rendering;
 
 	private record View(int slot, float yaw, float pitch, float zoom, boolean cutaway, boolean freeLook,
-			double eyeX, double eyeY, double eyeZ, float maxLayer) {
+			double eyeX, double eyeY, double eyeZ, float maxLayer, int quality) {
 	}
 
 	private record Frame(View view, @Nullable NativeImage image) {
@@ -279,7 +280,7 @@ public final class SchematicPreview {
 	}
 
 	public static void request(int slot, float yaw, float pitch, float zoom, boolean cutaway,
-			boolean freeLook, double @Nullable [] eye, float maxLayer) {
+			boolean freeLook, double @Nullable [] eye, float maxLayer, boolean interacting) {
 		int index = normalise(slot);
 
 		if (index < 0 || !hasSource(index)) {
@@ -294,9 +295,13 @@ public final class SchematicPreview {
 		double[] from = eye != null ? eye
 				: (freeLook ? eye(MODELS.get(index), index, yaw, pitch, zoom, cutaway) : null);
 
+		// While the user is actively orbiting/dragging, trace at half resolution (a quarter of the
+		// rays) for a responsive image; a crisp full-resolution frame is rendered once they settle.
+		int quality = interacting ? 2 : 1;
+
 		View wanted = new View(index, yaw, pitch, clampZoom(index, zoom), cutaway, freeLook,
 				from == null ? 0.0D : from[0], from == null ? 0.0D : from[1], from == null ? 0.0D : from[2],
-				Math.max(0.0F, Math.min(1.0F, maxLayer)));
+				Math.max(0.0F, Math.min(1.0F, maxLayer)), quality);
 
 		if (wanted.equals(queued) || (!rendering && wanted.equals(shown))) {
 			return;
@@ -574,7 +579,6 @@ public final class SchematicPreview {
 		double centreY = model.sizeY() / 2.0D;
 		double centreZ = model.sizeZ() / 2.0D;
 
-		ShapeTracer.Hit hit = new ShapeTracer.Hit();
 		double planeDistance = view.cutaway() && !view.freeLook()
 				? centreX * dirX + centreY * dirY + centreZ * dirZ - distance
 				: Double.NEGATIVE_INFINITY;
@@ -583,45 +587,83 @@ public final class SchematicPreview {
 				? model.sizeY()
 				: Math.max(1, Math.round(view.maxLayer() * model.sizeY()));
 
+		// The per-pixel work is independent, so trace row-blocks across every CPU core (this is a
+		// software raytracer - the GPU is not involved). `step` shrinks the ray count while orbiting.
+		int step = Math.max(1, view.quality());
+		int rowBlocks = (HEIGHT + step - 1) / step;
+
+		final double fDirX = dirX, fDirY = dirY, fDirZ = dirZ;
+		final double fRightX = rightX, fRightZ = rightZ;
+		final double fUpX = upX, fUpY = upY, fUpZ = upZ;
+		final double fScale = scale, fDistance = distance;
+		final double fCentreX = centreX, fCentreY = centreY, fCentreZ = centreZ;
+		final double fPlaneDistance = planeDistance;
+		final int fLayerCeiling = layerCeiling, fLod = lod, fStep = step;
+		final NativeImage target = image;
+
 		if (view.freeLook()) {
-			double focal = 1.0D / Math.tan(Math.toRadians(FIELD_OF_VIEW) / 2.0D);
-			double halfHeight = HEIGHT / 2.0D;
+			final double focal = 1.0D / Math.tan(Math.toRadians(FIELD_OF_VIEW) / 2.0D);
+			final double halfHeight = HEIGHT / 2.0D;
+			final double eyeX = view.eyeX(), eyeY = view.eyeY(), eyeZ = view.eyeZ();
 
-			for (int py = 0; py < HEIGHT; py++) {
+			IntStream.range(0, rowBlocks).parallel().forEach(rb -> {
+				int py = rb * fStep;
 				double screenY = (halfHeight - py - 0.5D) / halfHeight;
+				ShapeTracer.Hit hit = new ShapeTracer.Hit();
 
-				for (int px = 0; px < WIDTH; px++) {
+				for (int px = 0; px < WIDTH; px += fStep) {
 					double screenX = (px + 0.5D - WIDTH / 2.0D) / halfHeight;
 
-					double rayX = dirX * focal + rightX * screenX + upX * screenY;
-					double rayY = dirY * focal + upY * screenY;
-					double rayZ = dirZ * focal + rightZ * screenX + upZ * screenY;
+					double rayX = fDirX * focal + fRightX * screenX + fUpX * screenY;
+					double rayY = fDirY * focal + fUpY * screenY;
+					double rayZ = fDirZ * focal + fRightZ * screenX + fUpZ * screenY;
 					double length = Math.sqrt(rayX * rayX + rayY * rayY + rayZ * rayZ);
 
-					image.setPixel(px, py, trace(model, view.eyeX(), view.eyeY(), view.eyeZ(),
-							rayX / length, rayY / length, rayZ / length, planeDistance, layerCeiling, lod, hit));
+					int color = trace(model, eyeX, eyeY, eyeZ, rayX / length, rayY / length, rayZ / length,
+							fPlaneDistance, fLayerCeiling, fLod, hit);
+					fillBlock(target, px, py, fStep, color);
 				}
-			}
+			});
 
 			return image;
 		}
 
-		for (int py = 0; py < HEIGHT; py++) {
-			double screenY = (HEIGHT / 2.0D - py - 0.5D) / scale;
+		IntStream.range(0, rowBlocks).parallel().forEach(rb -> {
+			int py = rb * fStep;
+			double screenY = (HEIGHT / 2.0D - py - 0.5D) / fScale;
+			ShapeTracer.Hit hit = new ShapeTracer.Hit();
 
-			for (int px = 0; px < WIDTH; px++) {
-				double screenX = (px + 0.5D - WIDTH / 2.0D) / scale;
+			for (int px = 0; px < WIDTH; px += fStep) {
+				double screenX = (px + 0.5D - WIDTH / 2.0D) / fScale;
 
-				double originX = centreX + rightX * screenX + upX * screenY - dirX * distance;
-				double originY = centreY + upY * screenY - dirY * distance;
-				double originZ = centreZ + rightZ * screenX + upZ * screenY - dirZ * distance;
+				double originX = fCentreX + fRightX * screenX + fUpX * screenY - fDirX * fDistance;
+				double originY = fCentreY + fUpY * screenY - fDirY * fDistance;
+				double originZ = fCentreZ + fRightZ * screenX + fUpZ * screenY - fDirZ * fDistance;
 
-				image.setPixel(px, py, trace(model, originX, originY, originZ, dirX, dirY, dirZ,
-						planeDistance, layerCeiling, lod, hit));
+				int color = trace(model, originX, originY, originZ, fDirX, fDirY, fDirZ,
+						fPlaneDistance, fLayerCeiling, fLod, hit);
+				fillBlock(target, px, py, fStep, color);
 			}
-		}
+		});
 
 		return image;
+	}
+
+	// Writes a traced colour to a step x step block of pixels (step is 1 at full resolution).
+	private static void fillBlock(NativeImage image, int px, int py, int step, int color) {
+		if (step == 1) {
+			image.setPixel(px, py, color);
+			return;
+		}
+
+		int maxX = Math.min(WIDTH, px + step);
+		int maxY = Math.min(HEIGHT, py + step);
+
+		for (int yy = py; yy < maxY; yy++) {
+			for (int xx = px; xx < maxX; xx++) {
+				image.setPixel(xx, yy, color);
+			}
+		}
 	}
 
 	private static int trace(Model model, double originX, double originY, double originZ,

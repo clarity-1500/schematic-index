@@ -21,11 +21,13 @@ public final class Theme {
 	public static final int DOWNLOAD_FILL = 0xFF6FD9AE;
 	public static final int ON_ACCENT = 0xFFFFFFFF;
 
-	// Distinct hues for the three dashboard graph series so downloads no longer blends into the
-	// green of views, and likes reads as a warm heart red.
-	public static final int STAT_VIEWS = 0xFF3FA87F;      // green
-	public static final int STAT_DOWNLOADS = 0xFF5B9BF3;  // blue
-	public static final int STAT_LIKES = 0xFFE85D78;      // heart red, gently pink
+	// A cohesive jewel palette for the dashboard graph, anchored by the mod's green: green and
+	// periwinkle on the cool side, rose and amber on the warm side. All share similar saturation
+	// and brightness so they read as one set.
+	public static final int STAT_VIEWS = 0xFF54B98A;      // green (theme anchor)
+	public static final int STAT_DOWNLOADS = 0xFF6E93E8;  // periwinkle blue
+	public static final int STAT_LIKES = 0xFFE86E86;      // rose
+	public static final int STAT_STARS = 0xFFE7B24A;      // amber / gold
 
 	public static final int BACKDROP = 0xFF0F1114;
 	public static final int SURFACE = 0xFF171A1E;
@@ -379,14 +381,16 @@ public final class Theme {
 	public static final int TRASH_GLYPH_WIDTH = 7;
 
 	public static void click(float pitch) {
-		if (!Settings.sounds()) {
+		float volume = Settings.uiVolumeFraction();
+
+		if (!Settings.sounds() || volume <= 0.0F) {
 			return;
 		}
 
 		Minecraft client = Minecraft.getInstance();
 
 		if (client != null && client.getSoundManager() != null) {
-			client.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, pitch));
+			client.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK.value(), pitch, volume));
 		}
 	}
 
@@ -395,19 +399,22 @@ public final class Theme {
 	}
 
 	public static void sound(SoundEvent event, float pitch, float volume) {
-		if (!Settings.sounds()) {
+		float master = Settings.uiVolumeFraction();
+
+		if (!Settings.sounds() || master <= 0.0F) {
 			return;
 		}
 
 		Minecraft client = Minecraft.getInstance();
 
 		if (client != null && client.getSoundManager() != null) {
-			client.getSoundManager().play(SimpleSoundInstance.forUI(event, pitch, volume));
+			client.getSoundManager().play(SimpleSoundInstance.forUI(event, pitch, volume * master));
 		}
 	}
 
 	public static void tab() {
-		sound(SoundEvents.AMETHYST_CLUSTER_BREAK, 1.0F, 1.0F);
+		// A soft, short chime instead of the harsh amethyst break - quieter since tabs change often.
+		sound(SoundEvents.NOTE_BLOCK_CHIME.value(), 1.3F, 0.45F);
 	}
 
 	public static void success() {

@@ -135,6 +135,39 @@ public final class Backend {
 		fireAndForget("/report", body.toString());
 	}
 
+	// Sets this device's star rating (value in half-stars 1..10, 0 clears) and returns the
+	// authoritative { starAvg, starCount, myStars } so the UI can reflect the new average.
+	public static @Nullable JsonObject rate(String postId, int value) {
+		if (!configured()) {
+			return null;
+		}
+
+		JsonObject body = new JsonObject();
+		body.addProperty("postId", postId);
+		body.addProperty("value", value);
+		return postJsonForResult("/rate", body.toString());
+	}
+
+	private static @Nullable JsonObject postJsonForResult(String path, String jsonBody) {
+		try {
+			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + path))
+					.timeout(Duration.ofSeconds(12))
+					.header("Content-Type", "application/json")
+					.header("X-Device-Token", Settings.deviceToken())
+					.POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+					.build();
+			HttpResponse<String> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+
+			if (response.statusCode() / 100 == 2) {
+				return JsonParser.parseString(response.body()).getAsJsonObject();
+			}
+		} catch (Throwable e) {
+			SchematicIndexMod.LOGGER.debug("POST {} failed", path, e);
+		}
+
+		return null;
+	}
+
 	private static void fireAndForget(String path, String jsonBody) {
 		if (!configured()) {
 			return;
@@ -218,6 +251,62 @@ public final class Backend {
 	public static @Nullable String checkCode(String code) {
 		JsonObject body = uploaderInfo(code);
 		return body != null ? str(body, "displayName") : null;
+	}
+
+	// Recent follows and likes for the signed-in uploader (newest first).
+	public static @Nullable JsonObject notifications(String code) {
+		try {
+			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + "/me/notifications"))
+					.timeout(Duration.ofSeconds(10))
+					.header("X-Upload-Code", code)
+					.GET()
+					.build();
+			HttpResponse<String> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+
+			if (response.statusCode() >= 400) {
+				return null;
+			}
+
+			return JsonParser.parseString(response.body()).getAsJsonObject();
+		} catch (Throwable e) {
+			SchematicIndexMod.LOGGER.debug("me/notifications failed", e);
+			return null;
+		}
+	}
+
+	public static int editPost(String code, String postId, String title, String thumbnailName, String designer,
+			String description, String category) {
+		JsonObject body = new JsonObject();
+		body.addProperty("title", title);
+		body.addProperty("thumbnailName", thumbnailName);
+		body.addProperty("designer", designer);
+		body.addProperty("description", description);
+		body.addProperty("category", category);
+		return postWithCode("/me/posts/" + encode(postId) + "/edit", code, body.toString());
+	}
+
+	public static int unpublishPost(String code, String postId) {
+		return postWithCode("/me/posts/" + encode(postId) + "/unpublish", code, "{}");
+	}
+
+	private static int postWithCode(String path, String code, String jsonBody) {
+		if (!configured()) {
+			return -1;
+		}
+
+		try {
+			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + path))
+					.timeout(Duration.ofSeconds(12))
+					.header("Content-Type", "application/json")
+					.header("X-Upload-Code", code)
+					.header("X-Device-Token", Settings.deviceToken())
+					.POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+					.build();
+			return CLIENT.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+		} catch (Throwable e) {
+			SchematicIndexMod.LOGGER.debug("POST {} failed", path, e);
+			return -1;
+		}
 	}
 
 	public record UploadResult(int status, @Nullable String message) {
@@ -353,7 +442,8 @@ public final class Backend {
 				intOf(o, "blockCount"), intOf(o, "downloads"), intOf(o, "likes"), longOf(o, "postedAt"),
 				str(o, "description"), imageUrls.size(), 0, slot, false,
 				str(o, "thumbnailUrl"), imageUrls, fileUrl, str(o, "fileHash"), longOf(o, "fileSize"),
-				boolOf(o, "liked"), doubleOf(o, "trendScore"), intOf(o, "views"));
+				boolOf(o, "liked"), doubleOf(o, "trendScore"), intOf(o, "views"),
+				doubleOf(o, "starAvg"), intOf(o, "starCount"), intOf(o, "myStars"));
 	}
 
 	public static NewsFeed.Entry parseNews(JsonObject o) {

@@ -28,7 +28,10 @@ public record SchematicEntry(
 		long fileSize,
 		boolean liked,
 		double trendScore,
-		int views
+		int views,
+		double starAvg,
+		int starCount,
+		int myStars
 ) {
 	public static SchematicEntry local(String id, String title, String thumbnailName, String poster,
 			String designer, Category category, int sizeX, int sizeY, int sizeZ, int blockCount, int downloads,
@@ -36,7 +39,7 @@ public record SchematicEntry(
 			boolean downloaded) {
 		return new SchematicEntry(id, title, thumbnailName, poster, designer, category, sizeX, sizeY, sizeZ,
 				blockCount, downloads, likes, postedAt, description, imageCount, imageStart, schematicSlot,
-				downloaded, null, List.of(), null, null, 0L, false, 0.0, 0);
+				downloaded, null, List.of(), null, null, 0L, false, 0.0, 0, 0.0, 0, 0);
 	}
 
 	public String cardName() {

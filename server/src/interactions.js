@@ -23,6 +23,13 @@ const addFollow = db.prepare(`
 `);
 const dropFollow = db.prepare('DELETE FROM follows WHERE follower_token = ? AND poster = ?');
 
+const setStar = db.prepare(`
+  INSERT INTO stars (post_id, token, value, created_at) VALUES (?, ?, ?, ?)
+  ON CONFLICT(post_id, token) DO UPDATE SET value = excluded.value, created_at = excluded.created_at
+`);
+const dropStar = db.prepare('DELETE FROM stars WHERE post_id = ? AND token = ?');
+const starSummary = db.prepare('SELECT COUNT(*) n, COALESCE(AVG(value), 0) avg FROM stars WHERE post_id = ?');
+
 const existingReport = db.prepare('SELECT 1 FROM reports WHERE post_id = ? AND reporter_token = ?');
 const addReport = db.prepare(
   "INSERT INTO reports (post_id, reason, note, reporter_token, status, created_at) VALUES (?, ?, ?, ?, 'open', ?)",
@@ -116,6 +123,28 @@ export function registerInteractionRoutes(app) {
 
     dropFollow.run(req.deviceToken, poster);
     res.json({ ok: true });
+  });
+
+  const rateLimiter = rateLimit({ name: 'rate', windowMs: 60_000, max: 60 });
+
+  app.post('/rate', rateLimiter, (req, res) => {
+    const id = postId(req);
+
+    if (!visiblePost.get(id)) {
+      return res.status(404).json({ error: 'not_found', message: 'No such post.' });
+    }
+
+    // value is in half-stars: 1..10 (10 = 5.0). 0 clears the rating.
+    const value = Math.max(0, Math.min(10, Math.round(Number(req.body?.value) || 0)));
+
+    if (value === 0) {
+      dropStar.run(id, req.deviceToken);
+    } else {
+      setStar.run(id, req.deviceToken, value, Date.now());
+    }
+
+    const summary = starSummary.get(id);
+    res.json({ starCount: summary.n, starAvg: summary.avg / 2, myStars: value });
   });
 
   app.post('/report', reportLimit, (req, res) => {

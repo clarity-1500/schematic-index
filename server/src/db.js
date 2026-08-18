@@ -178,4 +178,17 @@ if (!codeColumns.includes('ign')) {
   db.exec('ALTER TABLE codes ADD COLUMN ign TEXT');
 }
 
+// One star rating per (post, device token). value is in half-stars: 1..10 where 10 = 5.0 stars.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS stars (
+    post_id    TEXT NOT NULL,
+    token      TEXT NOT NULL,
+    value      INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (post_id, token)
+  );
+  CREATE INDEX IF NOT EXISTS idx_stars_post ON stars(post_id);
+  CREATE INDEX IF NOT EXISTS idx_stars_created ON stars(created_at);
+`);
+
 console.log(`[db] ready at ${paths.db}`);

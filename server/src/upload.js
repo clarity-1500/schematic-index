@@ -105,7 +105,12 @@ export function registerUploadRoutes(app) {
 
     const since = labels[0];
     const sinceMs = Date.parse(since + 'T00:00:00.000Z');
-    const series = { views: labels.map(() => 0), downloads: labels.map(() => 0), likes: labels.map(() => 0) };
+    const series = {
+      views: labels.map(() => 0),
+      downloads: labels.map(() => 0),
+      likes: labels.map(() => 0),
+      stars: labels.map(() => 0),
+    };
     const fill = (arr, rows) => {
       for (const r of rows) {
         if (r.day in index) arr[index[r.day]] = r.n;
@@ -122,11 +127,17 @@ export function registerUploadRoutes(app) {
     fill(series.downloads, db.prepare("SELECT day, COUNT(*) n FROM downloads WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(since, codeId));
     fill(series.views, db.prepare("SELECT day, COUNT(*) n FROM views WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(since, codeId));
     fill(series.likes, db.prepare("SELECT date(created_at/1000,'unixepoch') day, COUNT(*) n FROM likes WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(sinceMs, codeId));
+    fill(series.stars, db.prepare("SELECT date(created_at/1000,'unixepoch') day, COUNT(*) n FROM stars WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY day").all(sinceMs, codeId));
 
     // Per-post daily series so clicking a post on the dashboard can graph just that post.
     const postSeries = {};
     for (const p of posts) {
-      postSeries[p.id] = { views: labels.map(() => 0), downloads: labels.map(() => 0), likes: labels.map(() => 0) };
+      postSeries[p.id] = {
+        views: labels.map(() => 0),
+        downloads: labels.map(() => 0),
+        likes: labels.map(() => 0),
+        stars: labels.map(() => 0),
+      };
     }
     const fillPost = (key, rows) => {
       for (const r of rows) {
@@ -139,6 +150,7 @@ export function registerUploadRoutes(app) {
       fillPost('downloads', db.prepare("SELECT post_id, day, COUNT(*) n FROM downloads WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(since, codeId));
       fillPost('views', db.prepare("SELECT post_id, day, COUNT(*) n FROM views WHERE day >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(since, codeId));
       fillPost('likes', db.prepare("SELECT post_id, date(created_at/1000,'unixepoch') day, COUNT(*) n FROM likes WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(sinceMs, codeId));
+      fillPost('stars', db.prepare("SELECT post_id, date(created_at/1000,'unixepoch') day, COUNT(*) n FROM stars WHERE created_at >= ? AND post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?) GROUP BY post_id, day").all(sinceMs, codeId));
     }
 
     res.json({
@@ -149,6 +161,8 @@ export function registerUploadRoutes(app) {
         downloads: posts.reduce((a, p) => a + p.downloads, 0),
         likes: posts.reduce((a, p) => a + p.likes, 0),
         followers: db.prepare('SELECT COUNT(*) n FROM follows WHERE poster = ?').get(poster).n,
+        rating: db.prepare('SELECT COALESCE(AVG(value), 0) a FROM stars WHERE post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?)').get(codeId).a / 2,
+        ratingCount: db.prepare('SELECT COUNT(*) n FROM stars WHERE post_id IN (SELECT id FROM posts WHERE uploader_code_id = ?)').get(codeId).n,
       },
       days: labels,
       series,
@@ -166,6 +180,61 @@ export function registerUploadRoutes(app) {
         thumbnailUrl: fileUrl(p.thumbnail_key),
       })),
     });
+  });
+
+  // Recent follows to this uploader and likes on their posts, newest first. The mod tracks
+  // which it has already shown locally so it only toasts genuinely new ones.
+  app.get('/me/notifications', requireCode, (req, res) => {
+    const codeId = req.uploaderCode.id;
+    const poster = req.uploaderCode.display_name;
+
+    const follows = db.prepare('SELECT created_at FROM follows WHERE poster = ? ORDER BY created_at DESC LIMIT 30')
+      .all(poster).map((f) => ({ type: 'follow', at: f.created_at }));
+
+    const likes = db.prepare(`
+      SELECT l.created_at AS at, l.post_id AS postId, p.title AS postTitle
+      FROM likes l JOIN posts p ON p.id = l.post_id
+      WHERE p.uploader_code_id = ? ORDER BY l.created_at DESC LIMIT 30
+    `).all(codeId).map((l) => ({ type: 'like', at: l.at, postId: l.postId, postTitle: l.postTitle }));
+
+    const items = [...follows, ...likes].sort((a, b) => b.at - a.at).slice(0, 40);
+    res.json({ items });
+  });
+
+  // Edit only the text of a post you own (never the images or schematic).
+  app.post('/me/posts/:id/edit', requireCode, (req, res) => {
+    const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
+
+    if (!post || post.uploader_code_id !== req.uploaderCode.id) {
+      return res.status(404).json({ error: 'not_found', message: 'No such post of yours.' });
+    }
+
+    const title = String(req.body?.title || '').trim();
+    const thumbnailName = String(req.body?.thumbnailName || '').trim();
+    const designer = String(req.body?.designer || '').trim();
+    const description = String(req.body?.description || '').trim();
+    const category = String(req.body?.category || '').toUpperCase();
+
+    if (!title) return res.status(400).json({ error: 'no_title', message: 'A title is required.' });
+    if (!CATEGORIES.has(category)) return res.status(400).json({ error: 'bad_category', message: 'Unknown category.' });
+
+    db.prepare('UPDATE posts SET title = ?, thumbnail_name = ?, designer = ?, description = ?, category = ? WHERE id = ?')
+      .run(title, thumbnailName, designer, description, category, post.id);
+    invalidatePosts();
+    res.json({ ok: true });
+  });
+
+  // Unpublish (hide) a post you own.
+  app.post('/me/posts/:id/unpublish', requireCode, (req, res) => {
+    const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
+
+    if (!post || post.uploader_code_id !== req.uploaderCode.id) {
+      return res.status(404).json({ error: 'not_found', message: 'No such post of yours.' });
+    }
+
+    db.prepare("UPDATE posts SET visibility = 'hidden' WHERE id = ?").run(post.id);
+    invalidatePosts();
+    res.json({ ok: true });
   });
 
   app.post('/upload', requireCode, upload, async (req, res) => {
