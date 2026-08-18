@@ -410,6 +410,11 @@ public class IndexScreen extends Screen {
 	private boolean sharingCode;
 	private long codeCopiedAt;             // shows "Copied!" on the chip briefly after copying
 
+	// Modal shown when an upload is rejected as a duplicate schematic.
+	private boolean duplicateOpen;
+	private final Rect duplicateClose = new Rect();
+	private final Rect duplicateBounds = new Rect();
+
 	// Modal for entering a shared collection code.
 	private boolean loadCodeOpen;
 	private String loadCodeInput = "";
@@ -1175,6 +1180,10 @@ public class IndexScreen extends Screen {
 			this.renderLoadCode(ctx, mouseX, mouseY);
 		}
 
+		if (this.duplicateOpen) {
+			this.renderDuplicate(ctx, mouseX, mouseY);
+		}
+
 		if (this.collectionOptionsOpen) {
 			this.renderCollectionOptions(ctx, mouseX, mouseY);
 		}
@@ -1402,6 +1411,39 @@ public class IndexScreen extends Screen {
 		this.nameConfirm.set(x + cardWidth - pad - createWidth, btnY, createWidth, FIELD_HEIGHT);
 		this.pillButton(ctx, this.nameCancel, "Cancel", mouseX, mouseY, false);
 		this.pillButton(ctx, this.nameConfirm, "Create", mouseX, mouseY, true);
+	}
+
+	private void renderDuplicate(GuiGraphics ctx, int mouseX, int mouseY) {
+		ctx.fill(0, 0, this.width, this.height, Theme.SCRIM);
+
+		int pad = 16;
+		int cardWidth = Math.min(this.width - 40, 320);
+		int line = this.font.lineHeight;
+		List<String> body = this.wrap("This schematic has already been uploaded. You cannot post it again.",
+				cardWidth - pad * 2 - 4, 4);
+		int cardHeight = pad + line + 8 + body.size() * (line + 2) + 14 + FIELD_HEIGHT + pad;
+		int x = (this.width - cardWidth) / 2;
+		int y = (this.height - cardHeight) / 2;
+		this.duplicateBounds.set(x, y, cardWidth, cardHeight);
+
+		Theme.roundedRect(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.SURFACE_CARD);
+		Theme.roundedOutline(ctx, x, y, cardWidth, cardHeight, Theme.RADIUS_MODAL, Theme.HAIRLINE);
+		ctx.fill(x + 1, y + 1, x + 5, y + cardHeight - 1, 0xFFD64545);
+
+		int tx = x + pad + 4;
+		int ty = y + pad;
+		Theme.text(ctx, this.font, Theme.bold("Already uploaded"), tx, ty, Theme.TEXT);
+		ty += line + 8;
+
+		for (String row : body) {
+			Theme.text(ctx, this.font, row, tx, ty, Theme.TEXT_ASH);
+			ty += line + 2;
+		}
+
+		int btnY = y + cardHeight - pad - FIELD_HEIGHT;
+		int closeWidth = this.font.width(Theme.bold("Close")) + 20;
+		this.duplicateClose.set(x + cardWidth - pad - closeWidth, btnY, closeWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.duplicateClose, "Close", mouseX, mouseY, true);
 	}
 
 	private void renderLoadCode(GuiGraphics ctx, int mouseX, int mouseY) {
@@ -3315,7 +3357,8 @@ public class IndexScreen extends Screen {
 		return this.detail != null || this.errorOpen || this.nameInputOpen || this.deleteCollectionOpen
 				|| this.collectionOptionsOpen || this.renameCollectionOpen || this.tutorialActive
 				|| this.designerWarnOpen || this.reportOpen || this.pendingOverwrite != null
-				|| this.postOptionsOpen || this.editPostOpen || this.unpublishOpen || this.loadCodeOpen;
+				|| this.postOptionsOpen || this.editPostOpen || this.unpublishOpen || this.loadCodeOpen
+				|| this.duplicateOpen;
 	}
 
 	// Begins a scrollbar drag if the click landed on (or near) the thumb of the bar drawn this
@@ -5549,6 +5592,15 @@ public class IndexScreen extends Screen {
 			return true;
 		}
 
+		if (this.duplicateOpen) {
+			if (this.duplicateClose.contains(mouseX, mouseY) || !this.duplicateBounds.contains(mouseX, mouseY)) {
+				Theme.click(0.9F);
+				this.duplicateOpen = false;
+			}
+
+			return true;
+		}
+
 		if (this.deleteCollectionOpen) {
 			if (this.deleteCollectionConfirm.contains(mouseX, mouseY)) {
 				Theme.click(0.9F);
@@ -6659,6 +6711,9 @@ public class IndexScreen extends Screen {
 					clearDraft();
 					Catalogue.refresh();
 					this.switchPage(Page.BROWSE);
+				} else if (result.status() == 409) {
+					this.formStatus = "";
+					this.duplicateOpen = true;
 				} else if (result.message() != null && !result.message().isBlank()) {
 					this.formStatus = result.message();
 				} else {
@@ -7470,6 +7525,14 @@ public class IndexScreen extends Screen {
 				}
 				default -> {
 				}
+			}
+
+			return true;
+		}
+
+		if (this.duplicateOpen) {
+			if (event.key() == 256 || event.key() == 257 || event.key() == 335) {
+				this.duplicateOpen = false;
 			}
 
 			return true;

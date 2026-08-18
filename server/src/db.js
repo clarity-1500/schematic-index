@@ -178,6 +178,15 @@ if (!codeColumns.includes('ign')) {
   db.exec('ALTER TABLE codes ADD COLUMN ign TEXT');
 }
 
+// Migration: content_hash identifies a post by its block data (Regions) alone, ignoring the
+// name/author metadata we stamp, so the same schematic can't be re-uploaded under a new name.
+const postColumns = db.prepare("PRAGMA table_info('posts')").all().map((c) => c.name);
+
+if (!postColumns.includes('content_hash')) {
+  db.exec('ALTER TABLE posts ADD COLUMN content_hash TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_posts_content_hash ON posts(content_hash)');
+}
+
 // One star rating per (post, device token). value is in half-stars: 1..10 where 10 = 5.0 stars.
 db.exec(`
   CREATE TABLE IF NOT EXISTS stars (

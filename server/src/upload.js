@@ -37,9 +37,28 @@ const insertPost = db.prepare(`
   INSERT INTO posts
     (id, title, thumbnail_name, poster, designer, category, size_x, size_y, size_z, block_count,
      downloads, likes, posted_at, description, thumbnail_key, file_key, file_hash, file_size,
-     visibility, uploader_code_id, created_token, created_ip, report_count)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, 'visible', ?, ?, ?, 0)
+     visibility, uploader_code_id, created_token, created_ip, report_count, content_hash)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, 'visible', ?, ?, ?, 0, ?)
 `);
+
+// A hash of only the block data (Regions), so it identifies a schematic by its actual arrangement
+// of blocks - independent of the Name/Author/Description/timestamps we (and the uploader) stamp.
+async function contentHash(buffer) {
+  try {
+    const { parsed } = await nbt.parse(buffer);
+    const regions = parsed.value?.Regions;
+
+    if (!regions) return null;
+
+    const regionsOnly = { name: '', type: 'compound', value: { Regions: regions } };
+    const bytes = nbt.writeUncompressed(regionsOnly, 'big');
+    return crypto.createHash('sha256').update(bytes).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+const postByContentHash = db.prepare("SELECT id FROM posts WHERE content_hash = ? AND visibility = 'visible'");
 const insertImage = db.prepare('INSERT INTO post_images (post_id, position, file_key) VALUES (?, ?, ?)');
 
 function requireCode(req, res, next) {
@@ -76,7 +95,25 @@ function imageExtension(mime) {
   return null;
 }
 
+// One-off backfill so existing posts get a content hash and can be matched against new uploads.
+async function migrateContentHashes() {
+  const rows = db.prepare('SELECT id, file_key FROM posts WHERE content_hash IS NULL AND file_key IS NOT NULL').all();
+
+  for (const row of rows) {
+    try {
+      const buffer = await fs.promises.readFile(path.join(paths.files, row.file_key));
+      const hash = await contentHash(buffer);
+
+      if (hash) db.prepare('UPDATE posts SET content_hash = ? WHERE id = ?').run(hash, row.id);
+    } catch {
+      // Skip unreadable files.
+    }
+  }
+}
+
 export function registerUploadRoutes(app) {
+  migrateContentHashes().catch(() => {});
+
   app.get('/uploader', (req, res) => {
     const code = (req.get('X-Upload-Code') || '').trim();
     const row = code && codeByValue.get(code);
@@ -272,6 +309,14 @@ export function registerUploadRoutes(app) {
 
       const original = await fs.promises.readFile(schematic.path);
       const dims = await readLitematic(original);
+
+      // Reject a schematic whose block data already exists, regardless of its name/uploader.
+      const cHash = await contentHash(original);
+
+      if (cHash && postByContentHash.get(cHash)) {
+        return fail(409, 'duplicate', 'This schematic has already been uploaded, you cannot post it again.');
+      }
+
       const stamped = await stampLitematic(original, title);
       const fileHash = 'sha256:' + crypto.createHash('sha256').update(stamped).digest('hex');
 
@@ -293,7 +338,7 @@ export function registerUploadRoutes(app) {
         String(meta.designer || '').trim() || null, category, dims.x, dims.y, dims.z, dims.blocks,
         Date.now(), String(meta.description || '').trim() || null, imageKeys[thumbIndex], fileKey, fileHash,
         stamped.length, req.uploaderCode.id, (req.get('X-Device-Token') || '').trim() || null,
-        req.ip || null,
+        req.ip || null, cHash,
       );
 
       imageKeys.forEach((key, i) => insertImage.run(id, i, key));
