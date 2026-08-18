@@ -4,6 +4,7 @@ import { getJsonKv } from './content.js';
 
 const imagesStmt = db.prepare('SELECT file_key FROM post_images WHERE post_id = ? ORDER BY position');
 const likedStmt = db.prepare('SELECT 1 FROM likes WHERE post_id = ? AND token = ?');
+const viewsStmt = db.prepare('SELECT COUNT(*) AS n FROM views WHERE post_id = ?');
 
 // Trending = a recent surge, not lifetime popularity: only activity in the last
 // window counts, so an old post with old likes scores 0 while a fresh burst ranks high.
@@ -58,6 +59,7 @@ export function serializePost(row, token) {
     blockCount: row.block_count,
     downloads: row.downloads,
     likes: row.likes,
+    views: viewsStmt.get(row.id).n,
     postedAt: row.posted_at,
     description: row.description || '',
     thumbnailUrl: fileUrl(row.thumbnail_key),
