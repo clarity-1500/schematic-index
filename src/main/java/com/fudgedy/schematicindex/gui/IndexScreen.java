@@ -6497,28 +6497,44 @@ public class IndexScreen extends Screen {
 	}
 
 	private void loadIntoGame(Path file, String name) {
-		try {
-			LitematicaSchematic schematic = LitematicaSchematic.createFromFile(
-					file.getParent(), file.getFileName().toString(), FileType.LITEMATICA_SCHEMATIC);
+		// Parse off-thread (gzip inflate + full NBT), then hop back for the placement work.
+		Thread worker = new Thread(() -> {
+			LitematicaSchematic schematic;
 
-			if (schematic == null) {
-				this.showError(Errors.LOAD);
+			try {
+				schematic = LitematicaSchematic.createFromFile(
+						file.getParent(), file.getFileName().toString(), FileType.LITEMATICA_SCHEMATIC);
+			} catch (Throwable e) {
+				SchematicIndexMod.LOGGER.warn("Loading into game failed", e);
+				Minecraft.getInstance().execute(() -> this.showError(Errors.LOAD));
 				return;
 			}
 
-			SchematicHolder.getInstance().addSchematic(schematic, false);
+			LitematicaSchematic parsed = schematic;
+			Minecraft.getInstance().execute(() -> {
+				try {
+					if (parsed == null) {
+						this.showError(Errors.LOAD);
+						return;
+					}
 
-			Minecraft client = Minecraft.getInstance();
-			BlockPos origin = client.player != null ? client.player.blockPosition() : BlockPos.ZERO;
-			SchematicPlacement placement = SchematicPlacement.createFor(schematic, origin, name, true, true);
-			DataManager.getSchematicPlacementManager().addSchematicPlacement(placement, true);
+					SchematicHolder.getInstance().addSchematic(parsed, false);
 
-			this.status = "";
-			this.onClose();
-		} catch (Throwable e) {
-			SchematicIndexMod.LOGGER.warn("Loading into game failed", e);
-			this.showError(Errors.LOAD);
-		}
+					Minecraft client = Minecraft.getInstance();
+					BlockPos origin = client.player != null ? client.player.blockPosition() : BlockPos.ZERO;
+					SchematicPlacement placement = SchematicPlacement.createFor(parsed, origin, name, true, true);
+					DataManager.getSchematicPlacementManager().addSchematicPlacement(placement, true);
+
+					this.status = "";
+					this.onClose();
+				} catch (Throwable e) {
+					SchematicIndexMod.LOGGER.warn("Loading into game failed", e);
+					this.showError(Errors.LOAD);
+				}
+			});
+		}, "schematicindex-load-parse");
+		worker.setDaemon(true);
+		worker.start();
 	}
 
 	private void startDownload(SchematicEntry entry) {
@@ -6733,22 +6749,41 @@ public class IndexScreen extends Screen {
 		this.formSizeZ = 0;
 		this.formBlockCount = 0;
 
-		Minecraft.getInstance().submit(() -> {
+		// Parse off-thread (gzip inflate + full NBT), then apply the stats back on the main thread.
+		Thread worker = new Thread(() -> {
+			int sizeX = 0;
+			int sizeY = 0;
+			int sizeZ = 0;
+			int blockCount = 0;
+
 			try {
 				LitematicaSchematic schematic = LitematicaSchematic.createFromFile(
 						file.getParent(), file.getFileName().toString(), FileType.LITEMATICA_SCHEMATIC);
 
 				if (schematic != null) {
 					var size = schematic.getMetadata().getEnclosingSize();
-					this.formSizeX = Math.abs(size.getX());
-					this.formSizeY = Math.abs(size.getY());
-					this.formSizeZ = Math.abs(size.getZ());
-					this.formBlockCount = (int) Math.max(0L, schematic.getMetadata().getTotalBlocks());
+					sizeX = Math.abs(size.getX());
+					sizeY = Math.abs(size.getY());
+					sizeZ = Math.abs(size.getZ());
+					blockCount = (int) Math.max(0L, schematic.getMetadata().getTotalBlocks());
 				}
 			} catch (Throwable e) {
 				SchematicIndexMod.LOGGER.debug("Could not read schematic stats", e);
 			}
-		});
+
+			int finalSizeX = sizeX;
+			int finalSizeY = sizeY;
+			int finalSizeZ = sizeZ;
+			int finalBlockCount = blockCount;
+			Minecraft.getInstance().execute(() -> {
+				this.formSizeX = finalSizeX;
+				this.formSizeY = finalSizeY;
+				this.formSizeZ = finalSizeZ;
+				this.formBlockCount = finalBlockCount;
+			});
+		}, "schematicindex-schematic-stats");
+		worker.setDaemon(true);
+		worker.start();
 	}
 
 	private void removeFormPicture(int index) {

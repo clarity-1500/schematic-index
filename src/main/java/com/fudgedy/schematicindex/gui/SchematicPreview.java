@@ -354,7 +354,8 @@ public final class SchematicPreview {
 			return;
 		}
 
-		Minecraft.getInstance().submit(() -> {
+		// The parse is expensive (gzip inflate + full NBT), so keep it off the main thread.
+		CompletableFuture.supplyAsync(() -> {
 			try {
 				return LitematicaSchematic.createFromFile(
 						file.getParent(), file.getFileName().toString(), FileType.LITEMATICA_SCHEMATIC);

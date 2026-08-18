@@ -21,9 +21,18 @@ public final class UpdateGate {
 	}
 
 	public static String currentVersion() {
-		return FabricLoader.getInstance().getModContainer(SchematicIndexMod.MOD_ID)
-				.map(container -> container.getMetadata().getVersion().getFriendlyString())
-				.orElse("0.0.0");
+		String version = localVersion();
+		return version == null ? "0.0.0" : version;
+	}
+
+	private static @Nullable String localVersion() {
+		try {
+			return FabricLoader.getInstance().getModContainer(SchematicIndexMod.MOD_ID)
+					.map(container -> container.getMetadata().getVersion().getFriendlyString())
+					.orElse(null);
+		} catch (Throwable e) {
+			return null;
+		}
 	}
 
 	public static boolean required() {
@@ -107,7 +116,14 @@ public final class UpdateGate {
 			minVersion = orEmpty(min);
 			modrinthProject = project;
 
-			if (min == null || min.isBlank() || !isBelow(currentVersion(), min)) {
+			String current = localVersion();
+
+			// If we can't tell what version we're running, fail open rather than lock the user out.
+			if (current == null || current.isBlank()) {
+				return;
+			}
+
+			if (min == null || min.isBlank() || !isBelow(current, min)) {
 				return;
 			}
 
@@ -119,7 +135,7 @@ public final class UpdateGate {
 			} else {
 				SchematicIndexMod.LOGGER.info(
 						"Update required ({} below {}) but no installable Modrinth version is live yet",
-						currentVersion(), min);
+						current, min);
 			}
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.debug("Version check failed", e);

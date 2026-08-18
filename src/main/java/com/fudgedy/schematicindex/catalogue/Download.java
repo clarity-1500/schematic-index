@@ -29,6 +29,8 @@ public final class Download {
 
 	private static final Map<String, Progress> BY_POST = new ConcurrentHashMap<>();
 
+	private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(6)).build();
+
 	private Download() {
 	}
 
@@ -80,9 +82,8 @@ public final class Download {
 
 	private static InputStream open(@Nullable String url, @Nullable Path source, String postId) throws Exception {
 		if (url != null && !url.isBlank()) {
-			HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(6)).build();
 			HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofMinutes(2)).build();
-			HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+			HttpResponse<InputStream> response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
 
 			if (response.statusCode() >= 400) {
 				throw new IllegalStateException("HTTP " + response.statusCode());
@@ -100,11 +101,10 @@ public final class Download {
 
 	private static long expectedLength(String url) {
 		try {
-			HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build();
 			HttpRequest request = HttpRequest.newBuilder(URI.create(url))
 					.method("HEAD", HttpRequest.BodyPublishers.noBody())
 					.build();
-			return client.send(request, HttpResponse.BodyHandlers.discarding())
+			return HTTP.send(request, HttpResponse.BodyHandlers.discarding())
 					.headers().firstValueAsLong("content-length").orElse(-1L);
 		} catch (Throwable e) {
 			return -1L;

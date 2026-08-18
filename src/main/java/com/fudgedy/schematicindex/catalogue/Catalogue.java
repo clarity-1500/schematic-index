@@ -40,6 +40,11 @@ public final class Catalogue {
 	private static volatile boolean started;
 	private static volatile List<SchematicEntry> posts = List.of();
 	private static volatile long revision;
+	private static volatile long lastRefresh;
+
+	// Soft refreshes fired from ensureLoaded() within this window are skipped so opening
+	// or resizing the screen doesn't re-download the whole catalogue every time.
+	private static final long SOFT_REFRESH_INTERVAL_MS = 60_000L;
 
 	private Catalogue() {
 	}
@@ -82,6 +87,12 @@ public final class Catalogue {
 			return;
 		}
 
+		// Skip the automatic screen-open/resize refresh if we already have fresh data.
+		// Forced refreshes (soft == false, e.g. after an upload or manual retry) always run.
+		if (soft && lastRefresh != 0 && System.currentTimeMillis() - lastRefresh < SOFT_REFRESH_INTERVAL_MS) {
+			return;
+		}
+
 		if (!soft) {
 			state = State.LOADING;
 		}
@@ -92,6 +103,7 @@ public final class Catalogue {
 				setPosts(fetched);
 				NewsFeed.refresh();
 				RemoteContent.refresh();
+				lastRefresh = System.currentTimeMillis();
 				state = State.READY;
 			} catch (Throwable e) {
 				SchematicIndexMod.LOGGER.info("Catalogue fetch failed: {}", e.toString());

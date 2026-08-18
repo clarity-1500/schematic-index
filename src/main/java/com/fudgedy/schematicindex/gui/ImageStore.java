@@ -41,6 +41,7 @@ public final class ImageStore {
 	private static final int AVATAR_SIZE = 64;
 	private static final int MAX_IMAGES = 64;
 	private static final int UPLOADS_PER_FRAME = 2;
+	private static final long FAILED_BACKOFF_MS = 30_000L;
 
 	private static final List<Path> FILES = new ArrayList<>();
 
@@ -52,6 +53,7 @@ public final class ImageStore {
 		protected boolean removeEldestEntry(Map.Entry<String, Identifier> eldest) {
 			if (size() > MAX_IMAGES) {
 				Minecraft.getInstance().getTextureManager().release(eldest.getValue());
+				REQUESTED.remove(eldest.getKey());
 				return true;
 			}
 
@@ -60,7 +62,10 @@ public final class ImageStore {
 	};
 
 	private static final Set<String> REQUESTED = ConcurrentHashMap.newKeySet();
+	private static final Map<String, Long> FAILED = new ConcurrentHashMap<>();
 	private static final Queue<Decoded> PENDING = new ConcurrentLinkedQueue<>();
+
+	private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(6)).build();
 
 	private static final ExecutorService DECODER = Executors.newFixedThreadPool(2, runnable -> {
 		Thread thread = new Thread(runnable, "schematicindex-image");
@@ -169,18 +174,31 @@ public final class ImageStore {
 			return ready;
 		}
 
+		Long failedAt = FAILED.get(key);
+
+		if (failedAt != null) {
+			if (System.currentTimeMillis() - failedAt < FAILED_BACKOFF_MS) {
+				return null;
+			}
+
+			FAILED.remove(key);
+		}
+
 		if (REQUESTED.add(key)) {
 			DECODER.execute(() -> {
 				try {
 					NativeImage image = loader.load();
 
 					if (image != null) {
+						FAILED.remove(key);
 						PENDING.add(new Decoded(key, image));
 					} else {
 						REQUESTED.remove(key);
+						FAILED.put(key, System.currentTimeMillis());
 					}
 				} catch (Exception e) {
 					REQUESTED.remove(key);
+					FAILED.put(key, System.currentTimeMillis());
 					SchematicIndexMod.LOGGER.debug("Could not load image {}", key, e);
 				}
 			});
@@ -257,9 +275,8 @@ public final class ImageStore {
 			return Files.readAllBytes(cache);
 		}
 
-		HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(6)).build();
 		HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30)).build();
-		HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+		HttpResponse<byte[]> response = HTTP.send(request, HttpResponse.BodyHandlers.ofByteArray());
 
 		if (response.statusCode() >= 400) {
 			throw new IOException("HTTP " + response.statusCode() + " for " + url);
@@ -324,6 +341,7 @@ public final class ImageStore {
 
 		READY.clear();
 		REQUESTED.clear();
+		FAILED.clear();
 
 		Decoded pending;
 

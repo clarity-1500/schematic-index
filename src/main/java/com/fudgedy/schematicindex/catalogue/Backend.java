@@ -26,6 +26,7 @@ import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.GZIPInputStream;
 
 public final class Backend {
 	private static final HttpClient CLIENT = HttpClient.newBuilder()
@@ -53,15 +54,28 @@ public final class Backend {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + path))
 					.timeout(Duration.ofSeconds(12))
 					.header("X-Device-Token", Settings.deviceToken())
+					.header("Accept-Encoding", "gzip")
 					.GET()
 					.build();
-			HttpResponse<String> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+			HttpResponse<byte[]> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofByteArray());
 
 			if (response.statusCode() >= 400) {
 				return null;
 			}
 
-			return JsonParser.parseString(response.body()).getAsJsonObject();
+			byte[] body = response.body();
+			String encoding = response.headers().firstValue("Content-Encoding").orElse("");
+
+			// The server runs compression() but only when we ask; fall back to the raw bytes
+			// if it decided to answer uncompressed anyway.
+			if (encoding.toLowerCase().contains("gzip")) {
+				try (GZIPInputStream gz = new GZIPInputStream(new ByteArrayInputStream(body))) {
+					body = gz.readAllBytes();
+				}
+			}
+
+			String json = new String(body, StandardCharsets.UTF_8);
+			return JsonParser.parseString(json).getAsJsonObject();
 		} catch (Throwable e) {
 			SchematicIndexMod.LOGGER.debug("GET {} failed", path, e);
 			return null;
