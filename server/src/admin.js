@@ -29,6 +29,55 @@ const iconUpload = multer({
   limits: { fileSize: 1024 * 1024, files: 1 },
 }).single('icon');
 
+// sharp is an optional dependency: if it isn't available the server still runs, it just can't
+// convert WebP icons (the admin panel also converts them in the browser as a fallback).
+let sharpPromise;
+function getSharp() {
+  if (sharpPromise === undefined) {
+    sharpPromise = import('sharp').then((m) => m.default).catch(() => null);
+  }
+  return sharpPromise;
+}
+
+// The mod's image loader can't read WebP, so re-encode a .webp icon to .png in place and
+// return the new key (unchanged for anything already readable).
+async function ensureReadableIcon(iconKey) {
+  if (!iconKey || !iconKey.toLowerCase().endsWith('.webp')) return iconKey;
+
+  const sharp = await getSharp();
+  if (!sharp) return iconKey;
+
+  try {
+    const abs = path.join(paths.files, iconKey);
+    const png = await sharp(abs).png().toBuffer();
+    const newKey = iconKey.replace(/\.webp$/i, '.png');
+    await fs.promises.writeFile(path.join(paths.files, newKey), png);
+
+    if (newKey !== iconKey) await fs.promises.unlink(abs).catch(() => {});
+    return newKey;
+  } catch {
+    return iconKey;
+  }
+}
+
+// One-off startup pass: convert any WebP link/partner icons that were uploaded before conversion.
+async function migrateWebpIcons() {
+  const rows = [
+    ...db.prepare("SELECT 'links' t, id, icon_key FROM links WHERE icon_key LIKE '%.webp'").all(),
+    ...db.prepare("SELECT 'partners' t, id, icon_key FROM partners WHERE icon_key LIKE '%.webp'").all(),
+  ];
+
+  for (const row of rows) {
+    const newKey = await ensureReadableIcon(row.icon_key);
+
+    if (newKey !== row.icon_key) {
+      db.prepare(`UPDATE ${row.t} SET icon_key = ? WHERE id = ?`).run(newKey, row.id);
+    }
+  }
+
+  if (rows.length) invalidateContent();
+}
+
 function requireOwner(req, res, next) {
   if (!config.ownerKey) {
     return res.status(503).json({ error: 'no_owner_key', message: 'Server has no OWNER_KEY set.' });
@@ -46,6 +95,9 @@ function requireOwner(req, res, next) {
 
 export function registerAdminRoutes(app) {
   const owner = requireOwner;
+
+  // Fix any WebP icons uploaded before server-side conversion existed (best-effort, non-blocking).
+  migrateWebpIcons().catch(() => {});
 
   app.get('/admin', (req, res) => res.sendFile(path.join(publicDir, 'admin.html')));
 
@@ -414,7 +466,7 @@ export function registerAdminRoutes(app) {
     res.json({ ok: true, version });
   });
 
-  app.post('/admin/api/links', owner, iconUpload, (req, res) => {
+  app.post('/admin/api/links', owner, iconUpload, async (req, res) => {
     const url = String(req.body?.url || '').trim();
     const label = String(req.body?.label || '').trim();
 
@@ -427,7 +479,7 @@ export function registerAdminRoutes(app) {
       return res.status(400).json({ error: 'no_icon', message: 'An icon image is required.' });
     }
 
-    const iconKey = `link/${req.file.filename}`;
+    const iconKey = await ensureReadableIcon(`link/${req.file.filename}`);
     const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM links').get().p;
     db.prepare('INSERT INTO links (icon_key, url, label, position, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(iconKey, url, label, position, Date.now());
@@ -515,7 +567,7 @@ export function registerAdminRoutes(app) {
     res.json({ ok: true, stamped, skipped });
   });
 
-  app.post('/admin/api/partners', owner, iconUpload, (req, res) => {
+  app.post('/admin/api/partners', owner, iconUpload, async (req, res) => {
     const url = String(req.body?.url || '').trim();
     const name = String(req.body?.name || '').trim();
 
@@ -528,7 +580,7 @@ export function registerAdminRoutes(app) {
       return res.status(400).json({ error: 'no_icon', message: 'An icon image is required.' });
     }
 
-    const iconKey = `link/${req.file.filename}`;
+    const iconKey = await ensureReadableIcon(`link/${req.file.filename}`);
     const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM partners').get().p;
     db.prepare('INSERT INTO partners (icon_key, url, name, position, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(iconKey, url, name, position, Date.now());
