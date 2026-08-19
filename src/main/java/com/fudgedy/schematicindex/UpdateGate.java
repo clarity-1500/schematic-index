@@ -10,6 +10,7 @@ import org.jetbrains.annotations.Nullable;
 public final class UpdateGate {
 	private static volatile boolean checked;
 	private static volatile boolean required;
+	private static volatile boolean updateAvailable;
 	private static volatile boolean dismissed;
 	private static volatile String minVersion = "";
 	private static volatile String latestVersion = "";
@@ -48,7 +49,7 @@ public final class UpdateGate {
 	}
 
 	public static boolean shouldPrompt() {
-		return required && !dismissed;
+		return (required || updateAvailable) && !dismissed;
 	}
 
 	public static void dismiss() {
@@ -87,31 +88,17 @@ public final class UpdateGate {
 
 	private static void check() {
 		try {
-			if (Boolean.getBoolean("schematicindex.forceLock")) {
-				minVersion = System.getProperty("schematicindex.minVersion", "999.0.0");
-				required = true;
+			// The version check carries no identity - it's an anonymous GET.
+			JsonObject body = Backend.getJsonAnon("/version");
+
+			if (body == null) {
 				return;
 			}
 
-			String override = System.getProperty("schematicindex.minVersion");
-			String min;
-			String project;
-
-			if (override != null) {
-				min = override;
-				project = System.getProperty("schematicindex.modrinth", "");
-			} else {
-				JsonObject body = Backend.getJson("/version");
-
-				if (body == null) {
-					return;
-				}
-
-				min = orEmpty(str(body, "minVersion"));
-				latestVersion = orEmpty(str(body, "latestVersion"));
-				message = orEmpty(str(body, "message"));
-				project = orEmpty(str(body, "modrinth"));
-			}
+			String min = orEmpty(str(body, "minVersion"));
+			latestVersion = orEmpty(str(body, "latestVersion"));
+			message = orEmpty(str(body, "message"));
+			String project = orEmpty(str(body, "modrinth"));
 
 			minVersion = orEmpty(min);
 			modrinthProject = project;
@@ -131,7 +118,13 @@ public final class UpdateGate {
 
 			if (resolved != null && !isBelow(resolved.version(), min)) {
 				release = resolved;
-				required = true;
+
+				// The lock can be turned off in Settings; opting out downgrades it to a notice.
+				if (Settings.updateLockEnabled()) {
+					required = true;
+				} else {
+					updateAvailable = true;
+				}
 			} else {
 				SchematicIndexMod.LOGGER.info(
 						"Update required ({} below {}) but no installable Modrinth version is live yet",

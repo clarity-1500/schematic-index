@@ -7,7 +7,9 @@
   "authors": [
     "Fudgedy"
   ],
-  "contact": {},
+  "contact": {
+    "homepage": "https://modrinth.com/mod/the-schematic-index"
+  },
   "license": "ARR",
   "icon": "assets/schematicindex/icon.png",
   "environment": "client",
@@ -26,7 +28,7 @@
     "fabricloader": ">=0.16.0",
     "minecraft": "~${minecraft}",
     "java": ">=21",
-    "litematica": "*",
-    "malilib": "*"
+    "litematica": ">=0.26.12",
+    "malilib": ">=0.27.16"
   }
 }

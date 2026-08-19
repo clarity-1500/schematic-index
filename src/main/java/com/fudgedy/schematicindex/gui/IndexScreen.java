@@ -4,6 +4,7 @@ import com.fudgedy.schematicindex.SchematicIndexMod;
 import com.fudgedy.schematicindex.Errors;
 import com.fudgedy.schematicindex.LoadedCache;
 import com.fudgedy.schematicindex.Settings;
+import com.fudgedy.schematicindex.UpdateGate;
 import com.fudgedy.schematicindex.catalogue.Backend;
 import com.fudgedy.schematicindex.catalogue.Bookmarks;
 import com.fudgedy.schematicindex.catalogue.Catalogue;
@@ -244,6 +245,9 @@ public class IndexScreen extends Screen {
 	// successful upload (static, not persisted to disk).
 	private static boolean draftSaved;
 	private static boolean draftFormOpen;
+	// Passive "update available" notice for the notify-only path (lock opted out): show it at
+	// most once per launch when the mod screen opens, never on the title screen.
+	private static boolean updateNoticeShown;
 	private static String draftTitle = "";
 	private static String draftThumbnail = "";
 	private static String draftDesigner = "";
@@ -370,6 +374,8 @@ public class IndexScreen extends Screen {
 	private final Rect clearCacheButton = new Rect();
 	private final Rect toastsToggle = new Rect();
 	private final Rect notificationsToggle = new Rect();
+	private final Rect updateLockToggle = new Rect();
+	private final Rect resetTokenButton = new Rect();
 	private final Rect termsButton = new Rect();
 
 	private @Nullable RemoteContent.Announcement bannerAnnouncement;
@@ -489,7 +495,8 @@ public class IndexScreen extends Screen {
 	private static final String TERMS_BODY =
 			"By using The Schematic Index, you agree to these terms. If you do not agree, you cannot use "
 					+ "the online service.\n\n"
-					+ "Data & Privacy: The Service connects to external servers to sync the online catalog. "
+					+ "Data & Privacy: Nothing is sent anywhere until you accept these terms. Once accepted, "
+					+ "the Service connects to external servers to sync the online catalog. "
 					+ "It transmits a random local identifier along with your interactions (likes, downloads, "
 					+ "and reports). You can revoke consent anytime in Settings, which disables online "
 					+ "connectivity.\n\n"
@@ -568,6 +575,7 @@ public class IndexScreen extends Screen {
 			this.openTerms();
 		} else {
 			this.maybeStartTutorial();
+			this.maybeNotifyUpdate();
 		}
 
 		this.gridTop = TOP_BAR_HEIGHT + this.chipRowHeight;
@@ -1974,6 +1982,18 @@ public class IndexScreen extends Screen {
 				rect.y + (rect.height - this.font.lineHeight) / 2 + 1, Theme.TEXT_ASH);
 	}
 
+	// The hard lock takes over the whole screen (UpdateScreen); a notify-only update is far
+	// gentler - a single toast the first time the catalogue is opened in a session.
+	private void maybeNotifyUpdate() {
+		if (updateNoticeShown || UpdateGate.locked() || !UpdateGate.shouldPrompt()) {
+			return;
+		}
+		updateNoticeShown = true;
+		Toasts.push("Update available",
+				"Version " + UpdateGate.requiredVersion() + " is on Modrinth.",
+				new ItemStack(Items.NAME_TAG));
+	}
+
 	private void clickTos(double mouseX, double mouseY) {
 		if (!this.tosScrolledBottom) {
 			return;
@@ -1981,6 +2001,9 @@ public class IndexScreen extends Screen {
 
 		if (this.tosAgree.contains(mouseX, mouseY)) {
 			Settings.acceptTerms();
+			// Nothing contacts the server before this point; start now that consent is given.
+			Catalogue.refresh();
+			UpdateGate.checkAsync();
 			this.tosOpen = false;
 			Theme.click(1.2F);
 			this.maybeStartTutorial();
@@ -4561,6 +4584,26 @@ public class IndexScreen extends Screen {
 		this.pillButton(ctx, this.clearCacheButton, "Clear cache", mouseX, mouseY, false);
 
 		y += FIELD_HEIGHT;
+		y = this.settingsSectionHeader(ctx, "Privacy & updates", formX, y);
+
+		y = this.settingRow(ctx, this.updateLockToggle, "Require the latest version",
+				"When on, the mod disables itself until you install an update the developers have "
+						+ "marked as required. Turn off to only be notified of updates.",
+				Settings.updateLockEnabled(), formX, y, formWidth, mouseX, mouseY);
+
+		for (String row : this.wrap("An anonymous per-install ID lets the server de-duplicate your "
+				+ "likes, downloads, views and ratings. It is not tied to your Minecraft account. "
+				+ "Reset it to start fresh.", formWidth, 4)) {
+			Theme.text(ctx, this.font, row, formX, y, Theme.TEXT_ASH);
+			y += this.font.lineHeight + 2;
+		}
+
+		y += 8;
+		int resetWidth = this.font.width(Theme.bold("Reset identifier")) + 16;
+		this.resetTokenButton.set(formX, y, resetWidth, FIELD_HEIGHT);
+		this.pillButton(ctx, this.resetTokenButton, "Reset identifier", mouseX, mouseY, false);
+		y += FIELD_HEIGHT;
+
 		y = this.settingsSectionHeader(ctx, "Terms of service", formX, y);
 
 		for (String row : this.wrap("Review the terms you agreed to, or withdraw your agreement - which "
@@ -6227,6 +6270,13 @@ public class IndexScreen extends Screen {
 		} else if (this.creatorNotificationsToggle.contains(mouseX, mouseY)) {
 			Settings.toggleCreatorAlerts();
 			Theme.click(1.1F);
+		} else if (this.updateLockToggle.contains(mouseX, mouseY)) {
+			Settings.toggleUpdateLock();
+			Theme.click(1.1F);
+		} else if (this.resetTokenButton.contains(mouseX, mouseY)) {
+			Settings.resetDeviceToken();
+			Theme.click();
+			Toasts.push("Identifier reset", "A new anonymous ID was generated.", new ItemStack(Items.NAME_TAG));
 		} else if (this.changeFolderButton.contains(mouseX, mouseY)) {
 			Theme.click();
 			this.openDownloadPicker();

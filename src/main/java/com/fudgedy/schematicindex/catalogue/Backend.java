@@ -36,8 +36,10 @@ public final class Backend {
 	private Backend() {
 	}
 
+	// Networking is gated on the user having accepted the terms - nothing contacts the server
+	// until then, and revoking consent in Settings turns it back off.
 	public static boolean configured() {
-		return Settings.hasApiBaseUrl();
+		return Settings.hasApiBaseUrl() && Settings.termsAccepted();
 	}
 
 	private static String base() {
@@ -50,13 +52,29 @@ public final class Backend {
 	}
 
 	public static @Nullable JsonObject getJson(String path) {
+		return get(path, true);
+	}
+
+	// A GET that carries no device token - used for the anonymous /version check.
+	public static @Nullable JsonObject getJsonAnon(String path) {
+		return get(path, false);
+	}
+
+	private static @Nullable JsonObject get(String path, boolean identified) {
+		if (!configured()) {
+			return null;
+		}
+
 		try {
-			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + path))
+			HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(base() + path))
 					.timeout(Duration.ofSeconds(12))
-					.header("X-Device-Token", Settings.deviceToken())
-					.header("Accept-Encoding", "gzip")
-					.GET()
-					.build();
+					.header("Accept-Encoding", "gzip");
+
+			if (identified) {
+				builder.header("X-Device-Token", Settings.deviceToken());
+			}
+
+			HttpRequest request = builder.GET().build();
 			HttpResponse<byte[]> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofByteArray());
 
 			if (response.statusCode() >= 400) {
@@ -83,6 +101,10 @@ public final class Backend {
 	}
 
 	public static int postJson(String path, String jsonBody) {
+		if (!configured()) {
+			return -1;
+		}
+
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + path))
 					.timeout(Duration.ofSeconds(12))
@@ -163,6 +185,10 @@ public final class Backend {
 	}
 
 	private static @Nullable JsonObject postJsonForResult(String path, String jsonBody) {
+		if (!configured()) {
+			return null;
+		}
+
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + path))
 					.timeout(Duration.ofSeconds(12))
@@ -199,6 +225,10 @@ public final class Backend {
 	}
 
 	public static boolean download(String url, Path target) {
+		if (!configured()) {
+			return false;
+		}
+
 		try {
 			Files.createDirectories(target.getParent());
 			Path temporary = target.resolveSibling(target.getFileName() + ".part");
@@ -223,6 +253,10 @@ public final class Backend {
 	}
 
 	public static @Nullable JsonObject myStats(String code, int days) {
+		if (!configured()) {
+			return null;
+		}
+
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + "/me/stats?days=" + days))
 					.timeout(Duration.ofSeconds(12))
@@ -243,6 +277,10 @@ public final class Backend {
 	}
 
 	public static @Nullable JsonObject uploaderInfo(String code) {
+		if (!configured()) {
+			return null;
+		}
+
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + "/uploader"))
 					.timeout(Duration.ofSeconds(10))
@@ -299,6 +337,10 @@ public final class Backend {
 
 	// Recent follows and likes for the signed-in uploader (newest first).
 	public static @Nullable JsonObject notifications(String code) {
+		if (!configured()) {
+			return null;
+		}
+
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(base() + "/me/notifications"))
 					.timeout(Duration.ofSeconds(10))
@@ -363,6 +405,10 @@ public final class Backend {
 	}
 
 	public static UploadResult upload(String code, String metaJson, Path schematic, List<Path> images) {
+		if (!configured()) {
+			return new UploadResult(-1, null);
+		}
+
 		try {
 			uploadFraction = 0.0;
 			String boundary = "----schematicindex" + System.nanoTime();

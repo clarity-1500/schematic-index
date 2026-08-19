@@ -14,14 +14,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class TitleScreenMixin {
 	@Inject(method = "init", at = @At("RETURN"))
 	private void schematicindex$maybePromptUpdate(CallbackInfo info) {
-		if (!UpdateGate.shouldPrompt()) {
+		// Only the hard lock takes over the title screen. A notify-only update (the lock
+		// opted out in Settings) surfaces inside the mod screen instead, never here.
+		if (!UpdateGate.locked()) {
 			return;
 		}
 
 		Screen self = (Screen) (Object) this;
 		Minecraft client = Minecraft.getInstance();
 		client.execute(() -> {
-			if (UpdateGate.shouldPrompt() && client.screen == self) {
+			if (UpdateGate.locked() && client.screen == self) {
 				client.setScreen(new UpdateScreen(self));
 			}
 		});
