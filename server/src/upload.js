@@ -33,6 +33,8 @@ const upload = multer({
 ]);
 
 const codeByValue = db.prepare('SELECT * FROM codes WHERE code = ? AND revoked = 0');
+// Resolve a creator profile by its display name, for linking bot-posted schematics.
+const codeByDisplayName = db.prepare('SELECT id FROM codes WHERE display_name = ? AND revoked = 0 ORDER BY id LIMIT 1');
 const insertPost = db.prepare(`
   INSERT INTO posts
     (id, title, thumbnail_name, poster, designer, category, size_x, size_y, size_z, block_count,
@@ -415,11 +417,17 @@ export function registerUploadRoutes(app) {
         imageKeys.push(key);
       }
 
+      // Link to a creator profile when the bot marks this as a verified profile
+      // link (the poster's Discord id maps to this catalogue display name).
+      const profileName = String(req.body.profile || '').trim();
+      const codeRow = profileName ? codeByDisplayName.get(profileName) : null;
+      const uploaderCodeId = codeRow ? codeRow.id : null;
+
       insertPost.run(
         id, title, null, poster,
         String(req.body.designer || '').trim() || null, category, dims.x, dims.y, dims.z, dims.blocks,
         Date.now(), String(req.body.description || '').trim() || null, imageKeys[0], fileKey, fileHash,
-        stamped.length, null, (req.get('X-Device-Token') || '').trim() || null,
+        stamped.length, uploaderCodeId, (req.get('X-Device-Token') || '').trim() || null,
         req.ip || null, cHash,
       );
 
