@@ -6,6 +6,7 @@ import { registerReadRoutes } from './read.js';
 import { registerInteractionRoutes } from './interactions.js';
 import { registerUploadRoutes } from './upload.js';
 import { registerAdminRoutes } from './admin.js';
+import { registerPresenceRoutes } from './presence.js';
 
 export function createApp() {
   const app = express();
@@ -36,6 +37,7 @@ export function createApp() {
   registerInteractionRoutes(app);
   registerUploadRoutes(app);
   registerAdminRoutes(app);
+  registerPresenceRoutes(app);
 
   return app;
 }

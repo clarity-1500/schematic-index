@@ -4,6 +4,7 @@ import com.fudgedy.schematicindex.SchematicIndexMod;
 import com.fudgedy.schematicindex.Errors;
 import com.fudgedy.schematicindex.LoadedCache;
 import com.fudgedy.schematicindex.Settings;
+import com.fudgedy.schematicindex.Presence;
 import com.fudgedy.schematicindex.UpdateGate;
 import com.fudgedy.schematicindex.catalogue.Backend;
 import com.fudgedy.schematicindex.catalogue.Bookmarks;
@@ -498,8 +499,9 @@ public class IndexScreen extends Screen {
 					+ "Data & Privacy: Nothing is sent anywhere until you accept these terms. Once accepted, "
 					+ "the Service connects to external servers to sync the online catalog. "
 					+ "It transmits a random local identifier along with your interactions (likes, downloads, "
-					+ "and reports). You can revoke consent anytime in Settings, which disables online "
-					+ "connectivity.\n\n"
+					+ "and reports), plus a periodic anonymous heartbeat used only to count total installs "
+					+ "and how many players are online. You can reset the identifier or revoke consent anytime "
+					+ "in Settings, which disables online connectivity.\n\n"
 					+ "Content Ownership: Do not upload content you do not have the legal rights to "
 					+ "distribute. By uploading, you grant us a license to host and share your schematic. We "
 					+ "reserve the right to remove infringing content and terminate access for abuse.\n\n"
@@ -2004,6 +2006,7 @@ public class IndexScreen extends Screen {
 			// Nothing contacts the server before this point; start now that consent is given.
 			Catalogue.refresh();
 			UpdateGate.checkAsync();
+			Presence.beatNow();
 			this.tosOpen = false;
 			Theme.click(1.2F);
 			this.maybeStartTutorial();

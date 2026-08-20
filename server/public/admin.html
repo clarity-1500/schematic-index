@@ -72,6 +72,13 @@
   </nav>
   <main>
     <section id="tab-dashboard">
+      <div class="card">
+        <div class="row" style="justify-content:space-between; align-items:baseline; margin-bottom:12px">
+          <h3 style="margin:0">Users</h3>
+          <span class="muted" style="font-size:12px">anonymous · reflects heartbeats every 10 min</span>
+        </div>
+        <div class="row" id="usageTiles" style="gap:28px; flex-wrap:wrap"><span class="muted">Loading...</span></div>
+      </div>
       <div class="card"><div class="row" id="dashTotals" style="gap:24px; flex-wrap:wrap"><span class="muted">Loading...</span></div></div>
       <div class="card">
         <div class="row" style="justify-content:space-between; margin-bottom:10px">
@@ -548,9 +555,24 @@ function topList(rows) {
     <button class="small" onclick="showStats('${r.id}')">Stats</button></div>`).join('');
 }
 
+function fmtNum(n) { return (n == null ? 0 : n).toLocaleString(); }
+async function loadUsage() {
+  const res = await api('/admin/api/usage');
+  if (!res.ok) return;
+  const u = await res.json();
+  const dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#3fa87f;margin-right:6px;vertical-align:middle;box-shadow:0 0 6px #3fa87f"></span>';
+  document.getElementById('usageTiles').innerHTML =
+      `<div class="stat"><div class="k">Total users</div><div class="v">${fmtNum(u.total)}</div><div class="muted" style="font-size:11px">devices ever launched</div></div>`
+    + `<div class="stat"><div class="k">${dot}Online now</div><div class="v">${fmtNum(u.online)}</div><div class="muted" style="font-size:11px">playing right now</div></div>`
+    + `<div class="stat"><div class="k">Today</div><div class="v">${fmtNum(u.day)}</div></div>`
+    + `<div class="stat"><div class="k">This week</div><div class="v">${fmtNum(u.week)}</div></div>`
+    + `<div class="stat"><div class="k">This month</div><div class="v">${fmtNum(u.month)}</div></div>`;
+}
+
 let dashChart = null, dashDays = 30;
 async function loadDashboard(days) {
   if (days) dashDays = days;
+  loadUsage();
   const res = await api('/admin/api/stats?days='+dashDays);
   if (!res.ok) return;
   const d = await res.json();

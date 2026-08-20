@@ -31,6 +31,11 @@ check, no requests of any kind. Accepting is what turns networking on.
 - **Your actions in the catalogue** — when you like, save, rate, download, follow, or upload, that
   action is sent to the catalogue server so it can be recorded (e.g. a download increments that
   post's counter). Uploading additionally sends the schematic file and images you chose to upload.
+- **A periodic anonymous heartbeat** — about every 10 minutes while the game is running, the mod
+  pings the server with the anonymous ID and mod version. It's used only for aggregate counts:
+  how many installs exist in total and how many are online right now. The server stores only a
+  one-way hash of the ID with a timestamp — no IP, no raw ID — so the counts can't be tied back to
+  a person.
 - Nothing else. The mod does not read your other mods, your files, your chat, your account, or your
   clipboard except when *you* press paste into one of its own text fields.
 

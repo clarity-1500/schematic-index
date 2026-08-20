@@ -119,6 +119,19 @@ public final class Backend {
 		}
 	}
 
+	// Anonymous presence beat: registers this install (counted in "total users") and refreshes
+	// its server-side "online" timestamp. Carries only the anonymous device token and the mod
+	// version - nothing identifying - and no-ops entirely until the terms are accepted. Runs
+	// synchronously, so callers must invoke it off the main thread.
+	public static void heartbeat(String version) {
+		if (!configured()) {
+			return;
+		}
+
+		int status = postJson("/presence", one("version", version == null ? "" : version));
+		SchematicIndexMod.LOGGER.debug("Presence heartbeat -> {}", status);
+	}
+
 	public static void likeAsync(String postId, boolean like) {
 		fireAndForget(like ? "/like" : "/unlike", one("postId", postId));
 	}

@@ -8,6 +8,7 @@ import { config, paths } from './config.js';
 import { invalidatePosts, invalidateContent } from './cache.js';
 import { getCreditsAdmin, getTerms, getLinksAdmin, getPartnersAdmin, getJsonKv, getKv, setKv } from './content.js';
 import { stampLitematic } from './stamp.js';
+import { usageSnapshot } from './presence.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const linkIconsDir = path.join(paths.files, 'link');
@@ -218,6 +219,7 @@ export function registerAdminRoutes(app) {
         likes: db.prepare('SELECT COUNT(*) n FROM likes').get().n,
         follows: db.prepare('SELECT COUNT(*) n FROM follows').get().n,
       },
+      usage: usageSnapshot(),
       days: labels,
       series,
       top: {
@@ -226,6 +228,10 @@ export function registerAdminRoutes(app) {
       },
     });
   });
+
+  // Lightweight endpoint the dashboard polls on its own (every 10 min) to refresh the live
+  // total-installs and online-now counts without re-running the whole stats aggregation.
+  app.get('/admin/api/usage', owner, (req, res) => res.json(usageSnapshot()));
 
   app.get('/admin/api/news', owner, (req, res) => {
     const rows = db.prepare('SELECT * FROM news ORDER BY posted_at DESC').all();

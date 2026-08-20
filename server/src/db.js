@@ -215,4 +215,17 @@ if (!collectionCodeColumns.includes('name')) {
   db.exec('ALTER TABLE collection_codes ADD COLUMN name TEXT');
 }
 
+// Anonymous usage counting: one row per install, keyed by a SHA-256 hash of the device token
+// (never the raw token, and no IP alongside it). Powers the total-installs and concurrent-online
+// numbers in the admin panel. Clients beat every 10 minutes once the terms are accepted.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS seen_installs (
+    token_hash TEXT PRIMARY KEY,
+    first_seen INTEGER NOT NULL,
+    last_seen  INTEGER NOT NULL,
+    version    TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_seen_last ON seen_installs(last_seen);
+`);
+
 console.log(`[db] ready at ${paths.db}`);
